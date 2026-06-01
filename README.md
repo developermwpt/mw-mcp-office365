@@ -27,5 +27,13 @@ src/    → código técnico do servidor MCP (a desenvolver)
 
 ## Estado
 
-Fase de análise/arquitetura. Pré-requisito antes de codificar: PoC Fase 0 (validar connector
-remoto no Claude Team Desktop+Mobile e o refresh sob a política de Conditional Access do tenant).
+**PoC Fase 0 implementada** (T0–T12) — esqueleto do servidor MCP em Python (`mcp` 1.27.2):
+dual-plane OAuth (Plano A via SDK: RFC 9728/8414/7591; Plano B via `msal`: authcode+PKCE +
+refresh), mapeamento de identidade multi-conta, token store SQLite cifrado, tool read-only
+`whoami` e health checks. **46 testes** (unit + integração, Graph/Entra mockados) verdes; ver
+[`src/`](src) e o [plano de implementação](docs/poc-fase-0/plano-implementacao.md).
+
+Próximo passo (**pré-requisito antes dos módulos**): correr o
+[runbook de validação manual](docs/poc-fase-0/runbook-validacao-manual.md) no tenant/VPS reais
+— validar o connector no Claude Team Desktop+Mobile e o **refresh sob a Conditional Access**
+(dispositivo gerido). Só isso decide o go/no-go.
