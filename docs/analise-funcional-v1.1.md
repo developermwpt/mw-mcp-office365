@@ -97,7 +97,7 @@ Idênticos à [v1.0 §4](analise-funcional-v1.0.md), com a alteração transvers
 - **Teams (chats 1:1 e grupo):** listar chats, ler mensagens, enviar/responder.
 - **Ficheiros (OneDrive/SharePoint):** pesquisar, listar, ler, upload, mover/renomear/eliminar.
 
-> A orquestração de pedidos complexos e interligados (decomposição, dependências entre passos, ordenação, gestão de IDs, falhas parciais) está detalhada no [playbook do assistente](assistant-playbook.md).
+> A orquestração de pedidos complexos e interligados (decomposição, dependências entre passos, ordenação, gestão de IDs, falhas parciais) está detalhada no [playbook do assistente](../src/prompts/assistant-playbook.md).
 
 ## 7. RGPD / Compliance
 
