@@ -5,6 +5,11 @@ Servidor MCP (Model Context Protocol) remoto para integração com o Microsoft O
 
 ## Documentação
 
+- [`docs/analise-funcional-v1.1.md`](docs/analise-funcional-v1.1.md) — **Análise funcional a
+  implementar.** User stories + arquitetura de identidade (duplo OAuth), aprovação server-side
+  two-phase, segurança/prompt injection, RGPD e decisões de risco.
+- [`docs/analise-funcional-v1.0.md`](docs/analise-funcional-v1.0.md) — Baseline funcional
+  (user stories + critérios de aceitação), mantido para histórico.
 - [`docs/assistant-playbook.md`](docs/assistant-playbook.md) — Playbook de instruções que o
   assistente consulta em runtime: princípios de operação, guia por ferramenta, orquestração
   de pedidos complexos e interligados, receitas e tabela de referência rápida.
