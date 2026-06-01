@@ -80,7 +80,9 @@ async def run_whoami(
             mapping.mark_expired(subject, account.account_id)
             return {
                 "status": "reauth_required",
-                "message": "A sua sessão expirou ou foi revogada. Volte a iniciar sessão no Claude.",
+                "message": (
+                    "A sua sessão expirou ou foi revogada. Volte a iniciar sessão no Claude."
+                ),
             }
         access_token = refreshed.access_token
         store.update_account_tokens(

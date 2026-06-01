@@ -40,7 +40,7 @@ asyncio_mode = "auto"
 addopts = "-q"
 # Layout src/: garante que `mcp_o365` é importável nos testes independentemente de
 # particularidades do install editável (ver nota no src/README.md sobre caminhos com espaços).
-pythonpath = ["src"]
+pythonpath = ["src", "."]
 
 [tool.ruff]
 line-length = 100

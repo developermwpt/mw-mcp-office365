@@ -11,7 +11,6 @@ protegida por um lock (suporta `:memory:` nos testes).
 
 from __future__ import annotations
 
-import json
 import sqlite3
 import threading
 import uuid
