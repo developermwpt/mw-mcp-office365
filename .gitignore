@@ -7,9 +7,15 @@ __pycache__/
 # Env & secrets
 .env
 .env.*
+!.env.example
 *.pem
 tokens.db
 *.sqlite
+
+# Python build / cache
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
 
 # Build
 dist/

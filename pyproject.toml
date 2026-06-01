@@ -1,0 +1,50 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mw-mcp-office365"
+version = "0.1.0"
+description = "Servidor MCP remoto de integração com Office 365 (Microsoft Graph) — PoC Fase 0"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Proprietary" }
+authors = [{ name = "Mobiweb" }]
+dependencies = [
+    "mcp==1.27.2",
+    "msal>=1.28",
+    "httpx>=0.27",
+    "cryptography>=42",
+    "pydantic-settings>=2.2",
+    "starlette>=0.37",
+    "uvicorn>=0.30",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.23",
+    "respx>=0.21",
+    "ruff>=0.5",
+]
+
+[project.scripts]
+mcp-o365 = "mcp_o365.app:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mcp_o365"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "-q"
+# Layout src/: garante que `mcp_o365` é importável nos testes independentemente de
+# particularidades do install editável (ver nota no src/README.md sobre caminhos com espaços).
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
