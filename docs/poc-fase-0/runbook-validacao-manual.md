@@ -115,11 +115,11 @@ Preencher mapeando observações aos critérios do [plano §1.2/1.3](plano-imple
 
 | Critério | Observação (preencher) | Veredito |
 |---|---|---|
-| **G1** — connector liga (Desktop) | | ☐ ok ☐ falha |
-| **G1** — connector liga (Mobile) | | ☐ ok ☐ **N1** |
-| **G2** — `whoami` end-to-end | | ☐ ok ☐ falha |
-| **G3** — refresh passa (direto **ou** com exceção de CA aceitável) | | ☐ ok ☐ **N2** ☐ **R3** |
-| Reauth graciosa (Passo 7) | | ☐ ok ☐ falha |
+| **G1** — connector liga (Desktop) | Ligado com sucesso no Claude Team Desktop. DCR + login no Entra concluídos. | ✅ ok |
+| **G1** — connector liga (Mobile) | Ligado com sucesso no Claude Team Mobile. | ✅ ok |
+| **G2** — `whoami` end-to-end | Devolveu `marcio.martins@mobiweb.pt` / Márcio Martins via Graph `User.Read`. | ✅ ok |
+| **G3** — refresh passa (direto **ou** com exceção de CA aceitável) | Por testar (~1h após login ou com Token Lifetime Policy reduzida). | ⬜ pendente |
+| Reauth graciosa (Passo 7) | Por testar (dependente de G3). | ⬜ pendente |
 
 Anexar os excertos de log relevantes (sobretudo os eventos `refresh_failure`, se houver) e a
 política de CA aplicada no Passo 6.
