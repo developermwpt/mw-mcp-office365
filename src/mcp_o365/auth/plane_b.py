@@ -22,6 +22,15 @@ from .errors import ConsentRequired, InvalidGrant, UpstreamAuthError
 
 logger = logging.getLogger("mcp_o365.auth.plane_b")
 
+# Scopes que o MSAL adiciona automaticamente — não podem ser passados explicitamente.
+_MSAL_RESERVED_SCOPES: frozenset[str] = frozenset({"offline_access", "openid", "profile", "email"})
+
+
+def _graph_scopes(scopes: list[str] | None) -> list[str]:
+    """Remove os scopes reservados pelo MSAL antes de os passar às suas APIs."""
+    return [s for s in (scopes or []) if s not in _MSAL_RESERVED_SCOPES]
+
+
 # Erros do Entra que significam "é preciso interação do utilizador".
 _REAUTH_ERRORS = {"invalid_grant", "interaction_required", "login_required"}
 _CONSENT_ERRORS = {"consent_required"}
@@ -73,8 +82,9 @@ class PlaneB:
     ) -> str:
         """URL de autorização do Entra para onde redirecionar o browser do utilizador."""
         app = self._factory()
+        effective = _graph_scopes(scopes or self._config.graph_scopes)
         return app.get_authorization_request_url(
-            scopes or self._config.graph_scopes,
+            effective,
             state=state,
             redirect_uri=redirect_uri,
         )
@@ -84,9 +94,10 @@ class PlaneB:
     ) -> TokenResult:
         """Troca o authorization code do Entra por tokens Graph."""
         app = self._factory()
+        effective = _graph_scopes(scopes or self._config.graph_scopes)
         result = app.acquire_token_by_authorization_code(
             code,
-            scopes=scopes or self._config.graph_scopes,
+            scopes=effective,
             redirect_uri=redirect_uri,
         )
         return self._normalize(result, subject_for_log=None)
@@ -101,8 +112,9 @@ class PlaneB:
     ) -> TokenResult:
         """Renova o token Graph. Em `invalid_grant`, regista `refresh_failure` e levanta."""
         app = self._factory()
+        effective = _graph_scopes(scopes or self._config.graph_scopes)
         result = app.acquire_token_by_refresh_token(
-            refresh_token, scopes=scopes or self._config.graph_scopes
+            refresh_token, scopes=effective
         )
         return self._normalize(
             result,
