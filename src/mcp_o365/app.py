@@ -40,6 +40,7 @@ def build_components(config: Settings) -> dict:
     recommender = Recommender(
         min_confidence=config.learning_min_confidence,
         top_n=config.learning_top_n,
+        half_life_days=config.learning_halflife_days,
     )
     server = build_server(
         config=config,

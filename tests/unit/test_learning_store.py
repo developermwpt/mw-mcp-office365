@@ -87,3 +87,15 @@ def test_purge_por_data_respeita_retencao(store, clock):
     restantes = store.list_behavior_events("s")
     assert len(restantes) == 1
     assert restantes[0]["action"] == "archive"
+
+
+def test_supressoes_isoladas_por_subject(store):
+    store.add_learning_suppression("a", sender_domain="x.com", action="archive")
+    store.add_learning_suppression("b", sender_domain="y.com", action="delete")
+    a = store.list_learning_suppressions("a")
+    assert a == [{"sender_domain": "x.com", "action": "archive"}]
+    b = store.list_learning_suppressions("b")
+    assert len(b) == 1 and b[0]["action"] == "delete"
+    # Reinserir o mesmo par não duplica (INSERT OR REPLACE).
+    store.add_learning_suppression("a", sender_domain="x.com", action="archive")
+    assert len(store.list_learning_suppressions("a")) == 1

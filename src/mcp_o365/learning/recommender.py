@@ -84,11 +84,25 @@ class Recommender:
         *,
         min_confidence: float = 0.5,
         top_n: int = 3,
+        half_life_days: float = 90.0,
         clock: Callable[[], datetime] = _utcnow,
     ) -> None:
         self._min_confidence = min_confidence
         self._top_n = top_n
+        self._half_life_days = half_life_days
         self._clock = clock
+
+    def _recency_weight(self, created_at: datetime | None) -> float:
+        """Peso de recência em (0, 1]: 1.0 para eventos recentes/sem data, decai por meia-vida.
+
+        Hábitos antigos pesam menos; um evento com `half_life_days` dias vale metade. Sem
+        `created_at` (ex.: eventos sintéticos de teste) -> 1.0, preservando o comportamento."""
+        if created_at is None or self._half_life_days <= 0:
+            return 1.0
+        age_days = (self._clock() - created_at).total_seconds() / 86400.0
+        if age_days <= 0:
+            return 1.0
+        return 0.5 ** (age_days / self._half_life_days)
 
     def recommend(
         self,
@@ -96,14 +110,17 @@ class Recommender:
         target: EmailSignature,
         events: list[dict],
         message_id: str | None = None,
+        suppressions: set[tuple[str | None, str]] | None = None,
     ) -> list[Recommendation]:
         """Gera recomendações para `target` a partir do histórico `events`.
 
-        Sem histórico (ou sem padrões acima do limiar) -> lista vazia (degradação
-        graciosa: o chamador devolve uma mensagem amigável, nunca um erro).
+        Pondera cada evento pela recência (meia-vida) e ignora padrões que o utilizador
+        suprimiu (`suppressions`: pares `(sender_domain, action)`). Sem histórico (ou sem
+        padrões acima do limiar) -> lista vazia (degradação graciosa, nunca um erro).
         """
-        # Agrupa por (ação, destino) acumulando a similaridade e o suporte.
-        groups: dict[tuple[str, str | None], list[float]] = {}
+        suppressed = suppressions or set()
+        # Agrupa por (ação, destino) acumulando (similaridade, peso de recência).
+        groups: dict[tuple[str, str | None], list[tuple[float, float]]] = {}
         for ev in events:
             action = ev.get("action")
             if action not in _ACTION_TO_PREPARE:
@@ -113,16 +130,24 @@ class Recommender:
             if sim <= 0.0:
                 continue
             key = (action, ev.get("destination"))
-            groups.setdefault(key, []).append(sim)
+            groups.setdefault(key, []).append(
+                (sim, self._recency_weight(ev.get("created_at")))
+            )
 
         recs: list[Recommendation] = []
-        for (action, destination), sims in groups.items():
-            support = len(sims)
+        for (action, destination), pairs in groups.items():
+            # Supressão explícita do utilizador (feedback "não voltar a sugerir isto").
+            if (target.sender_domain, action) in suppressed:
+                continue
+            support = len(pairs)
             if support < _MIN_SUPPORT:
                 continue
-            avg_sim = sum(sims) / support
+            avg_sim = sum(sim for sim, _ in pairs) / support
+            # Recência como fator multiplicativo: padrões antigos pesam menos. Sem datas
+            # (todos os pesos 1.0) o fator é 1.0 e a confiança é idêntica à anterior.
+            recency_factor = sum(w for _, w in pairs) / support
             support_factor = min(support / _SUPPORT_SATURATION, 1.0)
-            confidence = round(avg_sim * support_factor, 4)
+            confidence = round(avg_sim * support_factor * recency_factor, 4)
             if confidence < self._min_confidence:
                 continue
             recs.append(

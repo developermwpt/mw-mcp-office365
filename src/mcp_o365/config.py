@@ -56,6 +56,7 @@ class Settings(BaseSettings):
     learning_min_confidence: float = Field(0.5, alias="LEARNING_MIN_CONFIDENCE")
     learning_top_n: int = Field(3, alias="LEARNING_TOP_N")
     learning_retention_days: int = Field(180, alias="LEARNING_RETENTION_DAYS")
+    learning_halflife_days: float = Field(90.0, alias="LEARNING_HALFLIFE_DAYS")
 
     @property
     def graph_scopes(self) -> list[str]:

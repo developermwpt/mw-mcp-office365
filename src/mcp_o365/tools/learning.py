@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from ..learning.events import build_behavior_event
 from ..learning.features import extract_signature
@@ -84,8 +84,17 @@ async def run_email_recommendations(
         logger.exception("falha ao ler histórico de comportamento")
         events = []
 
+    try:
+        suppressions = {
+            (s["sender_domain"], s["action"])
+            for s in store.list_learning_suppressions(subject)
+        }
+    except Exception:  # noqa: BLE001 — supressões são best-effort
+        suppressions = set()
+
     recs = recommender.recommend(
-        target=target, events=events, message_id=message_id
+        target=target, events=events, message_id=message_id,
+        suppressions=suppressions,
     )
 
     log_audit(
@@ -166,6 +175,68 @@ async def run_learning_forget(
         "status": "ok",
         "deleted": deleted,
         "message": f"Apagados {deleted} evento(s) de comportamento. Histórico limpo.",
+    }
+
+
+async def run_learning_dismiss(
+    subject: str | None,
+    *,
+    store: TokenStore,
+    action: str,
+    sender_domain: str | None = None,
+    clock: Callable[[], datetime] = _utcnow,
+) -> dict:
+    """US-L.4 — Feedback explícito: deixar de sugerir uma `action` para um `sender_domain`."""
+    if not subject:
+        return {"status": "error", "message": "Sessão não autenticada. Inicie sessão."}
+    try:
+        store.add_learning_suppression(
+            subject, sender_domain=sender_domain, action=action
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("falha ao gravar supressão de recomendação")
+        return {"status": "error",
+                "message": "Não foi possível guardar a preferência. Tente novamente."}
+    log_audit(
+        audit_logger, action="learning.dismiss", subject=subject, outcome="success",
+        extra={"behavior_action": action, "sender_domain": sender_domain},
+    )
+    alvo = f"@{sender_domain}" if sender_domain else "qualquer remetente"
+    return {
+        "status": "ok",
+        "message": (
+            f"Deixarei de sugerir '{action}' para {alvo}. "
+            "Pode reativar apagando o histórico com learning_forget."
+        ),
+    }
+
+
+async def run_learning_purge_expired(
+    subject: str | None,
+    *,
+    store: TokenStore,
+    retention_days: int,
+    clock: Callable[[], datetime] = _utcnow,
+) -> dict:
+    """Retenção: apaga eventos mais antigos que `retention_days` (purga agendável por ops)."""
+    if not subject:
+        return {"status": "error", "message": "Sessão não autenticada. Inicie sessão."}
+    before = clock() - timedelta(days=retention_days)
+    try:
+        deleted = store.purge_behavior_events(subject, before=before)
+    except Exception:  # noqa: BLE001
+        logger.exception("falha ao purgar eventos antigos")
+        return {"status": "error", "message": "Não foi possível purgar o histórico."}
+    log_audit(
+        audit_logger, action="learning.purge", subject=subject, outcome="success",
+        extra={"deleted": deleted, "retention_days": retention_days},
+    )
+    return {
+        "status": "ok",
+        "deleted": deleted,
+        "message": (
+            f"Apagados {deleted} evento(s) com mais de {retention_days} dias (retenção)."
+        ),
     }
 
 

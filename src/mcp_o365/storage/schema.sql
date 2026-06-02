@@ -116,3 +116,13 @@ CREATE TABLE IF NOT EXISTS learning_preferences (
     opt_in      INTEGER NOT NULL DEFAULT 0,   -- 0 desligado (default), 1 consentido
     updated_at  TEXT NOT NULL
 );
+
+-- Supressões explícitas (feedback "não voltar a sugerir isto"): por (subject, domínio, ação).
+-- O recommender ignora padrões aqui listados. Isolamento por `subject`.
+CREATE TABLE IF NOT EXISTS learning_suppressions (
+    subject       TEXT NOT NULL,
+    sender_domain TEXT,                 -- domínio do remetente (NULL = qualquer)
+    action        TEXT NOT NULL,        -- ação suprimida (move|archive|reply|...)
+    created_at    TEXT NOT NULL,
+    PRIMARY KEY (subject, sender_domain, action)
+);

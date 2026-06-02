@@ -87,3 +87,35 @@ def test_acao_desconhecida_ignorada():
     rec = Recommender(min_confidence=0.1)
     events = [_event("flag_inexistente") for _ in range(5)]
     assert rec.recommend(target=_sig(), events=events) == []
+
+
+def test_supressao_filtra_recomendacao():
+    rec = Recommender(min_confidence=0.3)
+    events = [_event("archive", destination="Archive") for _ in range(5)]
+    sig = _sig()  # domínio newsletter.acme.com
+    assert len(rec.recommend(target=sig, events=events)) == 1  # sem supressão
+    out = rec.recommend(
+        target=sig, events=events,
+        suppressions={("newsletter.acme.com", "archive")},
+    )
+    assert out == []  # supressão explícita filtra
+
+
+def test_recencia_reduz_confianca_de_habitos_antigos():
+    from datetime import datetime, timedelta, timezone
+    now = datetime(2026, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+    rec = Recommender(min_confidence=0.0, half_life_days=30.0, clock=lambda: now)
+    sig = _sig()
+
+    def ev(created):
+        e = _event("reply", sig=sig)
+        e["created_at"] = created
+        return e
+
+    recent = [ev(now) for _ in range(4)]
+    old = [ev(now - timedelta(days=120)) for _ in range(4)]
+    c_recent = rec.recommend(target=sig, events=recent)[0].confidence
+    c_old = rec.recommend(target=sig, events=old)[0].confidence
+    assert c_recent > c_old
+    # 120 dias com meia-vida 30 => ~0.5^4 = 0.0625 do peso -> bem mais baixo.
+    assert c_old < c_recent * 0.2

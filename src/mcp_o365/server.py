@@ -297,6 +297,31 @@ def build_server(
     async def learning_forget() -> dict:
         return await learning_tools.run_learning_forget(_subject(), store=store)
 
+    @mcp.tool(
+        description=(
+            "Feedback: deixar de sugerir uma ação (action: move|archive|reply|reply_all|"
+            "forward|delete) para um remetente (sender_domain opcional; sem ele aplica a "
+            "qualquer remetente). Suprime essa recomendação no futuro."
+        )
+    )
+    async def learning_dismiss(
+        action: str, sender_domain: str | None = None
+    ) -> dict:
+        return await learning_tools.run_learning_dismiss(
+            _subject(), store=store, action=action, sender_domain=sender_domain,
+        )
+
+    @mcp.tool(
+        description=(
+            "Manutenção (retenção): apaga o histórico de comportamento mais antigo que a "
+            "retenção configurada (LEARNING_RETENTION_DAYS). Pensado para ser agendado."
+        )
+    )
+    async def learning_purge_expired() -> dict:
+        return await learning_tools.run_learning_purge_expired(
+            _subject(), store=store, retention_days=config.learning_retention_days,
+        )
+
     @mcp.custom_route("/callback", methods=["GET"], name="entra_callback")
     async def entra_callback(request: Request) -> RedirectResponse | JSONResponse:
         """Callback do Entra (Plano B): conclui o login e volta ao Claude."""

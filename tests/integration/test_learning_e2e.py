@@ -174,3 +174,38 @@ async def test_registo_de_comportamento_nunca_quebra_o_email(mapping, store, con
     # O move concluiu apesar da falha de registo (degradação graciosa).
     assert done["status"] == "done"
     assert gc.count("move_message") == 1
+
+
+async def test_dismiss_suprime_recomendacao(mapping, store, config, clock):
+    from mcp_o365.tools.learning import run_learning_dismiss
+    _link(mapping, clock)
+    await run_learning_opt_in("subj-1", store=store, enabled=True, clock=clock)
+    for i in range(4):
+        await _move_archive(mapping, store, config, clock, message_id=f"m{i}")
+
+    await run_learning_dismiss(
+        "subj-1", store=store, action="archive",
+        sender_domain="newsletter.acme.com", clock=clock,
+    )
+    recommender = Recommender(min_confidence=0.4, top_n=3)
+    out = await run_email_recommendations(
+        "subj-1", store=store, recommender=recommender,
+        message=_meta(), message_id="m-novo", clock=clock,
+    )
+    assert all(r["action"] != "archive" for r in out["recommendations"])
+
+
+async def test_purge_expired_remove_antigos(mapping, store, config, clock):
+    from mcp_o365.tools.learning import run_learning_purge_expired
+    _link(mapping, clock)
+    await run_learning_opt_in("subj-1", store=store, enabled=True, clock=clock)
+    for i in range(2):
+        await _move_archive(mapping, store, config, clock, message_id=f"m{i}")
+    assert len(store.list_behavior_events("subj-1")) == 2
+
+    clock.advance(200 * 86400)  # 200 dias depois
+    out = await run_learning_purge_expired(
+        "subj-1", store=store, retention_days=180, clock=clock
+    )
+    assert out["status"] == "ok" and out["deleted"] == 2
+    assert store.list_behavior_events("subj-1") == []

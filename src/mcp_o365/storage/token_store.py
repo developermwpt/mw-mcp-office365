@@ -587,3 +587,27 @@ class TokenStore:
                 )
             self._conn.commit()
             return cur.rowcount
+
+    def add_learning_suppression(
+        self, subject: str, *, sender_domain: str | None, action: str
+    ) -> None:
+        """Regista uma supressão (feedback 'não voltar a sugerir' para domínio+ação)."""
+        with self._lock:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO learning_suppressions("
+                "subject, sender_domain, action, created_at) VALUES (?,?,?,?)",
+                (subject, sender_domain, action, _iso(self._clock())),
+            )
+            self._conn.commit()
+
+    def list_learning_suppressions(self, subject: str) -> list[dict]:
+        """Lista as supressões do subject como `{sender_domain, action}`."""
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT sender_domain, action FROM learning_suppressions WHERE subject=?",
+                (subject,),
+            )
+            rows = cur.fetchall()
+        return [
+            {"sender_domain": r["sender_domain"], "action": r["action"]} for r in rows
+        ]
