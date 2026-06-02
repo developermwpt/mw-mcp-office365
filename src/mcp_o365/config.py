@@ -51,6 +51,13 @@ class Settings(BaseSettings):
     bind_host: str = Field("127.0.0.1", alias="BIND_HOST")
     bind_port: int = Field(8000, alias="BIND_PORT")
 
+    # --- Fase Aprendizagem (US-L.x) — opt-in, DESLIGADA por defeito (RGPD) ---
+    learning_enabled: bool = Field(False, alias="LEARNING_ENABLED")
+    learning_min_confidence: float = Field(0.5, alias="LEARNING_MIN_CONFIDENCE")
+    learning_top_n: int = Field(3, alias="LEARNING_TOP_N")
+    learning_retention_days: int = Field(180, alias="LEARNING_RETENTION_DAYS")
+    learning_halflife_days: float = Field(90.0, alias="LEARNING_HALFLIFE_DAYS")
+
     @property
     def graph_scopes(self) -> list[str]:
         """Scopes Graph como lista (a partir da string separada por espaços)."""

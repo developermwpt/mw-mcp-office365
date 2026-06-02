@@ -493,3 +493,121 @@ class TokenStore:
                 (_iso(self._clock()), result_enc, subject, token),
             )
             self._conn.commit()
+
+    # --- Fase Aprendizagem (US-L.x): preferências e eventos de comportamento ---
+    def set_learning_opt_in(self, subject: str, enabled: bool) -> None:
+        """Define o consentimento (opt-in) da aprendizagem para o subject."""
+        with self._lock:
+            self._conn.execute(
+                """INSERT INTO learning_preferences(subject, opt_in, updated_at)
+                   VALUES (?,?,?)
+                   ON CONFLICT(subject) DO UPDATE SET
+                       opt_in=excluded.opt_in, updated_at=excluded.updated_at""",
+                (subject, 1 if enabled else 0, _iso(self._clock())),
+            )
+            self._conn.commit()
+
+    def get_learning_opt_in(self, subject: str) -> bool:
+        """Devolve o opt-in do subject (default `False` se nunca definido)."""
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT opt_in FROM learning_preferences WHERE subject=?", (subject,)
+            )
+            row = cur.fetchone()
+        return bool(row["opt_in"]) if row else False
+
+    def record_behavior_event(
+        self,
+        subject: str,
+        *,
+        action: str,
+        features: dict,
+        sender_domain: str | None = None,
+        destination: str | None = None,
+    ) -> str:
+        """Grava um evento de comportamento (só metadados; features cifradas)."""
+        event_id = uuid.uuid4().hex
+        features_enc = self._cipher.encrypt_str(json.dumps(features))
+        with self._lock:
+            self._conn.execute(
+                """INSERT INTO behavior_events(
+                       event_id, subject, action, sender_domain, destination,
+                       features_enc, created_at)
+                   VALUES (?,?,?,?,?,?,?)""",
+                (
+                    event_id, subject, action, sender_domain, destination,
+                    features_enc, _iso(self._clock()),
+                ),
+            )
+            self._conn.commit()
+        return event_id
+
+    def list_behavior_events(
+        self, subject: str, sender_domain: str | None = None
+    ) -> list[dict]:
+        """Lista eventos do subject (opcionalmente por domínio). Decifra as features."""
+        with self._lock:
+            if sender_domain is not None:
+                cur = self._conn.execute(
+                    "SELECT * FROM behavior_events WHERE subject=? AND sender_domain=? "
+                    "ORDER BY created_at",
+                    (subject, sender_domain),
+                )
+            else:
+                cur = self._conn.execute(
+                    "SELECT * FROM behavior_events WHERE subject=? ORDER BY created_at",
+                    (subject,),
+                )
+            rows = cur.fetchall()
+        return [
+            {
+                "event_id": r["event_id"],
+                "action": r["action"],
+                "sender_domain": r["sender_domain"],
+                "destination": r["destination"],
+                "features": json.loads(self._cipher.decrypt_str(r["features_enc"])),
+                "created_at": _parse(r["created_at"]),
+            }
+            for r in rows
+        ]
+
+    def purge_behavior_events(
+        self, subject: str, before: datetime | None = None
+    ) -> int:
+        """Apaga eventos do subject. Com `before`, só os mais antigos. Devolve o nº apagado."""
+        with self._lock:
+            if before is not None:
+                cur = self._conn.execute(
+                    "DELETE FROM behavior_events WHERE subject=? AND created_at < ?",
+                    (subject, _iso(before)),
+                )
+            else:
+                cur = self._conn.execute(
+                    "DELETE FROM behavior_events WHERE subject=?", (subject,)
+                )
+            self._conn.commit()
+            return cur.rowcount
+
+    def add_learning_suppression(
+        self, subject: str, *, sender_domain: str | None, action: str
+    ) -> None:
+        """Regista uma supressão (feedback 'não voltar a sugerir' para domínio+ação)."""
+        with self._lock:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO learning_suppressions("
+                "subject, sender_domain, action, created_at) VALUES (?,?,?,?)",
+                (subject, sender_domain, action, _iso(self._clock())),
+            )
+            self._conn.commit()
+
+    def list_learning_suppressions(self, subject: str) -> list[dict]:
+        """Lista as supressões do subject como `{sender_domain, action}`."""
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT sender_domain, action FROM learning_suppressions WHERE subject=?",
+                (subject,),
+            )
+            rows = cur.fetchall()
+        return [
+            {"sender_domain": r["sender_domain"], "action": r["action"]} for r in rows
+        ]

@@ -17,6 +17,7 @@ from .auth.plane_b import PlaneB
 from .config import Settings, load_settings
 from .graph.client import GraphClient
 from .identity.mapping import IdentityMapping
+from .learning.recommender import Recommender
 from .logging_setup import setup_logging
 from .server import build_server
 from .storage.crypto import LocalAesGcmCipher
@@ -36,6 +37,11 @@ def build_components(config: Settings) -> dict:
     )
     graph_client = GraphClient(httpx.AsyncClient(timeout=30.0))
     approval = ApprovalEngine(store, ttl_seconds=config.approval_ttl_seconds)
+    recommender = Recommender(
+        min_confidence=config.learning_min_confidence,
+        top_n=config.learning_top_n,
+        half_life_days=config.learning_halflife_days,
+    )
     server = build_server(
         config=config,
         provider=provider,
@@ -44,6 +50,7 @@ def build_components(config: Settings) -> dict:
         graph_client=graph_client,
         store=store,
         approval=approval,
+        recommender=recommender,
     )
     return {
         "config": config,
@@ -54,6 +61,7 @@ def build_components(config: Settings) -> dict:
         "provider": provider,
         "graph_client": graph_client,
         "approval": approval,
+        "recommender": recommender,
         "server": server,
     }
 
