@@ -12,6 +12,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from mcp_o365.auth.errors import UpstreamAuthError
+
 
 class FakeGraphClient:
     """Fake do GraphClient: regista chamadas e devolve respostas programáveis."""
@@ -26,6 +28,7 @@ class FakeGraphClient:
         folders: list[dict] | None = None,
         moved: dict | None = None,
         draft: dict | None = None,
+        auth_fail: dict[str, int] | None = None,
     ) -> None:
         self.calls: list[tuple[str, tuple, dict]] = []
         self._messages = messages or {"messages": [], "next": None}
@@ -35,9 +38,15 @@ class FakeGraphClient:
         self._folders = folders or []
         self._moved = moved or {"id": "msg-novo"}
         self._draft = draft or {"id": "draft-1"}
+        # Nº de vezes que cada método deve simular um 401/403 do Graph antes de ter sucesso.
+        self._auth_fail = dict(auth_fail or {})
 
     def _record(self, name: str, *args: Any, **kwargs: Any) -> None:
         self.calls.append((name, args, kwargs))
+        remaining = self._auth_fail.get(name, 0)
+        if remaining > 0:
+            self._auth_fail[name] = remaining - 1
+            raise UpstreamAuthError(f"Graph rejeitou o token (simulado em {name}).")
 
     def count(self, name: str) -> int:
         return sum(1 for c in self.calls if c[0] == name)

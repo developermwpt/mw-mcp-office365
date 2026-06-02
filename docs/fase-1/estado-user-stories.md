@@ -46,6 +46,11 @@ bytes em chunks de 320 KiB com `Content-Range`, na `uploadUrl` pré-autenticada,
   (`ConfirmationNotFound`).
 - **Reautenticação graciosa:** qualquer falha de refresh (ex.: `invalid_grant` da CA) →
   `{"status":"reauth_required"}` e o Graph **não é chamado**.
+- **Resiliência a 401/403 do Graph:** se o Graph recusar um token aparentemente válido
+  (expirado/rotacionado, ou scopes acabados de mudar), o servidor **força um refresh e repete
+  uma vez**; se persistir, devolve `reauth_required` (nunca um erro cru). No `confirm`, o token
+  de confirmação **não é consumido** nessa falha — pode repetir-se após o re-login. (Cobre o
+  caso reportado em que o 1º encaminhamento falhava com erro opaco.)
 - **Auditoria sem PII:** cada escrita emite `event=audit` com `subject_hash` (nunca o subject
   em claro) e, no máximo, contagem de destinatários — nunca endereços nem corpo.
 - **Sanitização:** `<script>`/`<style>`, handlers `on*`, `javascript:` URIs, conteúdo oculto

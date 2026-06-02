@@ -14,10 +14,11 @@ O relógio (`clock`) é injetado para testes determinísticos.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
+from typing import Any
 
-from ..auth.errors import ReauthRequired
+from ..auth.errors import ReauthRequired, UpstreamAuthError
 from ..auth.plane_b import PlaneB
 from ..identity.mapping import IdentityMapping
 from ..identity.models import LinkedAccount
@@ -43,14 +44,16 @@ async def resolve_access_token(
     plane_b: PlaneB,
     store: TokenStore,
     account_id: str | None = None,
+    force_refresh: bool = False,
     clock: Callable[[], datetime] = _utcnow,
 ) -> tuple[LinkedAccount, str]:
     """Resolve a conta e devolve `(conta, access_token)` pronto a usar.
 
-    Faz refresh proativo se o token expira dentro de `_REFRESH_SKEW_SECONDS` e persiste os
-    tokens renovados (cifrados) via `store.update_account_tokens`. Levanta `ReauthRequired`
-    (com mensagem adequada ao utilizador) quando: o subject está vazio, não há conta ligada,
-    falta refresh token, ou o refresh é rejeitado (p.ex. `invalid_grant` pela CA).
+    Faz refresh proativo se o token expira dentro de `_REFRESH_SKEW_SECONDS` (ou se
+    `force_refresh=True`, usado quando o Graph rejeita um token aparentemente válido) e
+    persiste os tokens renovados (cifrados) via `store.update_account_tokens`. Levanta
+    `ReauthRequired` (com mensagem adequada ao utilizador) quando: o subject está vazio, não
+    há conta ligada, falta refresh token, ou o refresh é rejeitado (p.ex. `invalid_grant`).
     """
     if not subject:
         raise ReauthRequired("Sessão não autenticada. Inicie sessão.")
@@ -64,7 +67,8 @@ async def resolve_access_token(
     access_token = account.access_token
     now = clock()
     needs_refresh = (
-        access_token is None
+        force_refresh
+        or access_token is None
         or account.expires_at is None
         or (account.expires_at.timestamp() - now.timestamp()) < _REFRESH_SKEW_SECONDS
     )
@@ -96,3 +100,42 @@ async def resolve_access_token(
         )
 
     return account, access_token
+
+
+async def call_graph(
+    subject: str | None,
+    *,
+    mapping: IdentityMapping,
+    plane_b: PlaneB,
+    store: TokenStore,
+    op: Callable[[str], Awaitable[Any]],
+    account_id: str | None = None,
+    clock: Callable[[], datetime] = _utcnow,
+) -> tuple[LinkedAccount, Any]:
+    """Resolve `(conta, token)` e corre `op(token)` com resiliência a auth do Graph.
+
+    Se o Graph rejeitar o token (`UpstreamAuthError`, tipicamente 401/403 — token expirado,
+    rotacionado, ou scopes acabados de mudar) apesar de parecer válido, **força um refresh e
+    repete uma vez**. Se mesmo assim falhar, marca a conta como expirada e levanta
+    `ReauthRequired` — o chamador converte em `reauth_required` (nunca um erro cru ao
+    utilizador). Devolve `(conta, resultado_de_op)`.
+    """
+    account, token = await resolve_access_token(
+        subject, mapping=mapping, plane_b=plane_b, store=store,
+        account_id=account_id, clock=clock,
+    )
+    try:
+        return account, await op(token)
+    except UpstreamAuthError:
+        # Token recusado pelo Graph — força refresh e tenta de novo (uma vez).
+        account, token = await resolve_access_token(
+            subject, mapping=mapping, plane_b=plane_b, store=store,
+            account_id=account_id, force_refresh=True, clock=clock,
+        )
+        try:
+            return account, await op(token)
+        except UpstreamAuthError as exc:
+            mapping.mark_expired(subject, account.account_id)
+            raise ReauthRequired(
+                "A sua sessão expirou ou foi revogada. Volte a iniciar sessão no Claude."
+            ) from exc

@@ -32,7 +32,7 @@ from ..graph.sanitize import sanitize_html
 from ..identity.mapping import IdentityMapping
 from ..observability.audit import log_audit
 from ..storage.token_store import TokenStore
-from ._session import reauth_response, resolve_access_token
+from ._session import call_graph, reauth_response, resolve_access_token
 
 logger = logging.getLogger("mcp_o365.tools.email")
 audit_logger = logging.getLogger("mcp_o365.audit")
@@ -133,14 +133,6 @@ async def run_email_search(
     clock: Callable[[], datetime] = _utcnow,
 ) -> dict:
     """US-1.1 — Pesquisa mensagens. Constrói `$search`/`$filter` a partir dos critérios."""
-    try:
-        _, access_token = await resolve_access_token(
-            subject, mapping=mapping, plane_b=plane_b, store=store,
-            account_id=account_id, clock=clock,
-        )
-    except ReauthRequired as exc:
-        return reauth_response(str(exc))
-
     filters: list[str] = []
     if from_:
         filters.append(f"from/emailAddress/address eq '{from_}'")
@@ -152,15 +144,24 @@ async def run_email_search(
         filters.append(f"receivedDateTime le {date_to}")
     filter_query = " and ".join(filters) if filters else None
 
-    result = await graph_client.list_messages(
-        access_token,
-        search=query,
-        filter_query=filter_query,
-        folder=folder,
-        top=top,
-        skip=skip,
-        orderby=None if query else "receivedDateTime desc",
-    )
+    async def op(token: str) -> dict:
+        return await graph_client.list_messages(
+            token,
+            search=query,
+            filter_query=filter_query,
+            folder=folder,
+            top=top,
+            skip=skip,
+            orderby=None if query else "receivedDateTime desc",
+        )
+
+    try:
+        _, result = await call_graph(
+            subject, mapping=mapping, plane_b=plane_b, store=store,
+            op=op, account_id=account_id, clock=clock,
+        )
+    except ReauthRequired as exc:
+        return reauth_response(str(exc))
     return {
         "status": "ok",
         "messages": result["messages"],
@@ -182,14 +183,14 @@ async def run_email_read(
 ) -> dict:
     """US-1.2 — Lê uma mensagem. Sanitiza o corpo HTML (conteúdo não-confiável)."""
     try:
-        _, access_token = await resolve_access_token(
+        _, msg = await call_graph(
             subject, mapping=mapping, plane_b=plane_b, store=store,
+            op=lambda token: graph_client.get_message(token, message_id),
             account_id=account_id, clock=clock,
         )
     except ReauthRequired as exc:
         return reauth_response(str(exc))
 
-    msg = await graph_client.get_message(access_token, message_id)
     body = msg.get("body") or {}
     if (body.get("contentType") or "").lower() == "html" and body.get("content"):
         body = {**body, "content": sanitize_html(body["content"])}
@@ -216,18 +217,17 @@ async def run_email_list_attachments(
 ) -> dict:
     """US-1.5 — Lista anexos; com `download=True` + `attachment_id` devolve o **texto
     extraído** (PDF/texto) pronto a ler. Os bytes em base64 só seguem com `include_bytes=True`."""
-    try:
-        _, access_token = await resolve_access_token(
-            subject, mapping=mapping, plane_b=plane_b, store=store,
-            account_id=account_id, clock=clock,
-        )
-    except ReauthRequired as exc:
-        return reauth_response(str(exc))
-
     if download and attachment_id:
-        attachment = await graph_client.get_attachment(
-            access_token, message_id, attachment_id
-        )
+        try:
+            _, attachment = await call_graph(
+                subject, mapping=mapping, plane_b=plane_b, store=store,
+                op=lambda token: graph_client.get_attachment(
+                    token, message_id, attachment_id
+                ),
+                account_id=account_id, clock=clock,
+            )
+        except ReauthRequired as exc:
+            return reauth_response(str(exc))
         meta = {
             k: attachment.get(k)
             for k in ("id", "name", "contentType", "size", "isInline")
@@ -255,7 +255,14 @@ async def run_email_list_attachments(
             result["contentBytes"] = attachment.get("contentBytes")
         return result
 
-    attachments = await graph_client.list_attachments(access_token, message_id)
+    try:
+        _, attachments = await call_graph(
+            subject, mapping=mapping, plane_b=plane_b, store=store,
+            op=lambda token: graph_client.list_attachments(token, message_id),
+            account_id=account_id, clock=clock,
+        )
+    except ReauthRequired as exc:
+        return reauth_response(str(exc))
     return {"status": "ok", "attachments": attachments, "count": len(attachments)}
 
 
@@ -334,46 +341,44 @@ async def run_email_send_confirm(
     clock: Callable[[], datetime] = _utcnow,
 ) -> dict:
     """US-1.3 + US-1.6 — Confirma o envio com token fresco; audita `email.send`."""
-    try:
-        account, access_token = await resolve_access_token(
-            subject, mapping=mapping, plane_b=plane_b, store=store,
-            account_id=account_id, clock=clock,
-        )
-    except ReauthRequired as exc:
-        return reauth_response(str(exc))
-
     async def executor(operation: str, payload: dict) -> dict:
         message = payload["message"]
-        if payload.get("large_attachments"):
-            # Caminho de anexos grandes (>3MB): cria um rascunho com os anexos inline
-            # (<=3MB), abre uma upload session por anexo grande, carrega os bytes em chunks
-            # e só então envia o rascunho.
-            inline = [
-                a for a in message.get("attachments", [])
-                if not _att_is_large(a)
-            ]
-            draft_msg = {**message, "attachments": inline}
-            draft = await graph_client.create_draft(access_token, draft_msg)
-            draft_id = draft.get("id")
-            for att in message.get("attachments", []):
-                if not _att_is_large(att):
-                    continue
-                raw = base64.b64decode(att.get("contentBytes") or "")
-                session = await graph_client.create_attachment_upload_session(
-                    access_token,
-                    draft_id,
-                    attachment_item={
-                        "attachmentType": "file",
-                        "name": att.get("name"),
-                        "size": len(raw),
-                    },
+
+        async def send(token: str) -> None:
+            if payload.get("large_attachments"):
+                # Anexos grandes (>3MB): rascunho com os inline (<=3MB), upload session por
+                # anexo grande (bytes em chunks) e só então envia o rascunho.
+                inline = [
+                    a for a in message.get("attachments", [])
+                    if not _att_is_large(a)
+                ]
+                draft = await graph_client.create_draft(
+                    token, {**message, "attachments": inline}
                 )
-                upload_url = session.get("uploadUrl") if session else None
-                if upload_url:
-                    await graph_client.upload_attachment_bytes(upload_url, raw)
-            await graph_client.send_draft(access_token, draft_id)
-        else:
-            await graph_client.send_mail(access_token, message=message)
+                draft_id = draft.get("id")
+                for att in message.get("attachments", []):
+                    if not _att_is_large(att):
+                        continue
+                    raw = base64.b64decode(att.get("contentBytes") or "")
+                    session = await graph_client.create_attachment_upload_session(
+                        token, draft_id,
+                        attachment_item={
+                            "attachmentType": "file",
+                            "name": att.get("name"),
+                            "size": len(raw),
+                        },
+                    )
+                    upload_url = session.get("uploadUrl") if session else None
+                    if upload_url:
+                        await graph_client.upload_attachment_bytes(upload_url, raw)
+                await graph_client.send_draft(token, draft_id)
+            else:
+                await graph_client.send_mail(token, message=message)
+
+        account, _ = await call_graph(
+            subject, mapping=mapping, plane_b=plane_b, store=store,
+            op=send, account_id=account_id, clock=clock,
+        )
         log_audit(
             audit_logger,
             action="email.send",
@@ -459,32 +464,29 @@ async def run_email_reply_confirm(
     clock: Callable[[], datetime] = _utcnow,
 ) -> dict:
     """US-1.4 — Confirma resposta/reencaminho; audita `email.reply`/`email.forward`."""
-    try:
-        account, access_token = await resolve_access_token(
-            subject, mapping=mapping, plane_b=plane_b, store=store,
-            account_id=account_id, clock=clock,
-        )
-    except ReauthRequired as exc:
-        return reauth_response(str(exc))
-
     async def executor(operation: str, payload: dict) -> dict:
         mode = payload["mode"]
         message_id = payload["message_id"]
         comment = payload["comment"]
-        if mode == "forward":
-            await graph_client.forward(
-                access_token, message_id,
-                comment=comment, to_recipients=payload["to_recipients"],
-            )
-            action = "email.forward"
-            rcount = len(payload["to_recipients"])
-        else:
-            await graph_client.reply(
-                access_token, message_id,
-                comment=comment, reply_all=(mode == "reply_all"),
-            )
-            action = "email.reply"
-            rcount = None
+
+        async def do(token: str) -> None:
+            if mode == "forward":
+                await graph_client.forward(
+                    token, message_id,
+                    comment=comment, to_recipients=payload["to_recipients"],
+                )
+            else:
+                await graph_client.reply(
+                    token, message_id,
+                    comment=comment, reply_all=(mode == "reply_all"),
+                )
+
+        account, _ = await call_graph(
+            subject, mapping=mapping, plane_b=plane_b, store=store,
+            op=do, account_id=account_id, clock=clock,
+        )
+        action = "email.forward" if mode == "forward" else "email.reply"
+        rcount = len(payload["to_recipients"]) if mode == "forward" else None
         log_audit(
             audit_logger, action=action, subject=subject,
             account_id=account.account_id, target=message_id,
@@ -511,16 +513,14 @@ async def run_email_move_prepare(
 ) -> dict:
     """US-1.7 — Prepara mover: resolve nome de pasta -> id (case-insensitive)."""
     try:
-        account, access_token = await resolve_access_token(
+        account, (destination_id, display) = await call_graph(
             subject, mapping=mapping, plane_b=plane_b, store=store,
+            op=lambda token: _resolve_destination_id(destination, token, graph_client),
             account_id=account_id, clock=clock,
         )
     except ReauthRequired as exc:
         return reauth_response(str(exc))
 
-    destination_id, display = await _resolve_destination_id(
-        destination, access_token, graph_client
-    )
     if destination_id is None:
         return {
             "status": "error",
@@ -565,18 +565,14 @@ async def run_email_move_confirm(
     clock: Callable[[], datetime] = _utcnow,
 ) -> dict:
     """US-1.7 — Confirma mover; audita `email.move`."""
-    try:
-        account, access_token = await resolve_access_token(
-            subject, mapping=mapping, plane_b=plane_b, store=store,
-            account_id=account_id, clock=clock,
-        )
-    except ReauthRequired as exc:
-        return reauth_response(str(exc))
-
     async def executor(operation: str, payload: dict) -> dict:
-        moved = await graph_client.move_message(
-            access_token, payload["message_id"],
-            destination_id=payload["destination_id"],
+        account, moved = await call_graph(
+            subject, mapping=mapping, plane_b=plane_b, store=store,
+            op=lambda token: graph_client.move_message(
+                token, payload["message_id"],
+                destination_id=payload["destination_id"],
+            ),
+            account_id=account_id, clock=clock,
         )
         log_audit(
             audit_logger, action="email.move", subject=subject,
@@ -586,7 +582,7 @@ async def run_email_move_confirm(
         return {
             "operation": operation,
             "message": "Mensagem movida.",
-            "new_id": moved.get("id"),
+            "new_id": (moved or {}).get("id"),
         }
 
     return await _confirm(approval, subject=subject, token=confirmation_token,
@@ -650,17 +646,9 @@ async def run_email_delete_confirm(
     clock: Callable[[], datetime] = _utcnow,
 ) -> dict:
     """US-1.8 — Confirma eliminação; permanente exige `confirm_permanent=True`."""
-    try:
-        account, access_token = await resolve_access_token(
-            subject, mapping=mapping, plane_b=plane_b, store=store,
-            account_id=account_id, clock=clock,
-        )
-    except ReauthRequired as exc:
-        return reauth_response(str(exc))
-
     # A recusa de eliminação permanente sem confirmação reforçada tem de acontecer ANTES
     # de consumir o token (idempotência) — espreita a operação pendente primeiro.
-    pending = store.get_pending_operation(subject, confirmation_token)
+    pending = store.get_pending_operation(subject, confirmation_token) if subject else None
     if (
         pending is not None
         and pending["consumed_at"] is None
@@ -676,7 +664,11 @@ async def run_email_delete_confirm(
         }
 
     async def executor(operation: str, payload: dict) -> dict:
-        await graph_client.delete_message(access_token, payload["message_id"])
+        account, _ = await call_graph(
+            subject, mapping=mapping, plane_b=plane_b, store=store,
+            op=lambda token: graph_client.delete_message(token, payload["message_id"]),
+            account_id=account_id, clock=clock,
+        )
         log_audit(
             audit_logger, action="email.delete", subject=subject,
             account_id=account.account_id, target=payload["message_id"],
@@ -693,9 +685,14 @@ async def run_email_delete_confirm(
 
 
 async def _confirm(approval, *, subject, token, executor) -> dict:
-    """Adaptador comum: traduz erros do `ApprovalEngine` em respostas amigáveis."""
+    """Adaptador comum: traduz erros do `ApprovalEngine` (e a reauth do executor) em
+    respostas amigáveis. Em `ReauthRequired`, a operação NÃO é marcada como consumida pelo
+    engine (o executor levantou antes de concluir), pelo que o token continua válido para
+    repetir após o re-login."""
     try:
         return await approval.confirm(subject=subject, token=token, executor=executor)
+    except ReauthRequired as exc:
+        return reauth_response(str(exc))
     except ConfirmationNotFound as exc:
         return {"status": "error", "message": str(exc)}
     except ConfirmationExpired as exc:

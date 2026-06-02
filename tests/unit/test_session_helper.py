@@ -92,3 +92,52 @@ async def test_refresh_proativo_persiste_novo_token(mapping, store, config, cloc
     acc = store.get_account("subj-1", "acc-1")
     assert acc["access_token"] == "graph-access-1"
     assert acc["refresh_token"] == "rt-new"
+
+
+# ---- call_graph: resiliência a 401/403 do Graph (refresh forçado + retry) ----
+
+from mcp_o365.auth.errors import UpstreamAuthError  # noqa: E402
+from mcp_o365.tools._session import call_graph  # noqa: E402
+
+
+async def test_call_graph_401_forca_refresh_e_repete_com_sucesso(mapping, store, config, clock):
+    """Token aparentemente válido recusado pelo Graph (401) -> refresh forçado + retry OK."""
+    mapping.link_account(
+        subject="subj-1", access_token="valid-at", refresh_token="rt-1",
+        expires_at=clock() + timedelta(hours=1), home_account_id="acc-1",
+    )
+    tokens_vistos: list[str] = []
+
+    async def op(token: str) -> str:
+        tokens_vistos.append(token)
+        if token == "valid-at":
+            raise UpstreamAuthError("Graph rejeitou o token (401).")
+        return "ok"
+
+    account, result = await call_graph(
+        "subj-1", mapping=mapping, plane_b=_plane_b(config, clock),
+        store=store, op=op, clock=clock,
+    )
+    assert result == "ok"
+    assert account.account_id == "acc-1"
+    # 1ª tentativa com o token corrente (falha), 2ª com o token renovado (sucesso).
+    assert tokens_vistos == ["valid-at", "graph-access-1"]
+    assert store.get_account("subj-1", "acc-1")["access_token"] == "graph-access-1"
+
+
+async def test_call_graph_401_persistente_vira_reauth(mapping, store, config, clock):
+    """Mesmo após refresh, o Graph continua a recusar -> ReauthRequired (graciosa)."""
+    mapping.link_account(
+        subject="subj-1", access_token="valid-at", refresh_token="rt-1",
+        expires_at=clock() + timedelta(hours=1), home_account_id="acc-1",
+    )
+
+    async def op(_token: str):
+        raise UpstreamAuthError("Graph rejeitou o token (403).")
+
+    with pytest.raises(ReauthRequired):
+        await call_graph(
+            "subj-1", mapping=mapping, plane_b=_plane_b(config, clock),
+            store=store, op=op, clock=clock,
+        )
+    assert mapping.select_account("subj-1") is None  # conta marcada expirada

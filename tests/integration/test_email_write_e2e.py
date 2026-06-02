@@ -366,3 +366,53 @@ async def test_escrita_reauth_quando_refresh_falha_nao_chama_graph(
     )
     assert out["status"] == "reauth_required"
     assert gc.count("send_mail") == 0
+
+
+# ===== Resiliência a 401/403 do Graph no confirm (cenário do encaminhamento reportado) =====
+
+
+async def test_forward_confirm_recupera_de_401_transparente(mapping, store, config, clock):
+    """O Graph recusa o token à 1ª (401) -> refresh forçado + retry -> envio concluído."""
+    _link(mapping, clock)
+    gc = FakeGraphClient(auth_fail={"forward": 1})  # falha uma vez, depois sucesso
+    approval = _approval(store, clock)
+    pb = _plane_b(config, clock)
+
+    prepared = await run_email_reply_prepare(
+        "subj-1", mapping=mapping, plane_b=pb, store=store, approval=approval,
+        message_id="m1", comment="FYI", mode="forward",
+        to_recipients=["accounting@mobiweb.pt"], clock=clock,
+    )
+    confirmed = await run_email_reply_confirm(
+        "subj-1", mapping=mapping, plane_b=pb, graph_client=gc, store=store,
+        approval=approval, confirmation_token=prepared["confirmation_token"], clock=clock,
+    )
+    assert confirmed["status"] == "done"
+    assert gc.count("forward") == 2  # 1ª falhou (401), 2ª com token renovado
+    # Token renovado persistido no store.
+    assert store.get_account("subj-1", "acc-1")["access_token"] == "graph-access-1"
+
+
+async def test_forward_confirm_401_persistente_reauth_e_token_reutilizavel(
+    mapping, store, config, clock
+):
+    """401 persistente -> reauth_required gracioso (sem erro cru) e token NÃO consumido."""
+    _link(mapping, clock)
+    gc = FakeGraphClient(auth_fail={"forward": 5})  # falha sempre
+    approval = _approval(store, clock)
+    pb = _plane_b(config, clock)
+
+    prepared = await run_email_reply_prepare(
+        "subj-1", mapping=mapping, plane_b=pb, store=store, approval=approval,
+        message_id="m1", comment="FYI", mode="forward",
+        to_recipients=["accounting@mobiweb.pt"], clock=clock,
+    )
+    token = prepared["confirmation_token"]
+    confirmed = await run_email_reply_confirm(
+        "subj-1", mapping=mapping, plane_b=pb, graph_client=gc, store=store,
+        approval=approval, confirmation_token=token, clock=clock,
+    )
+    assert confirmed["status"] == "reauth_required"
+    # O token de confirmação continua por consumir -> pode repetir-se após o re-login.
+    pending = store.get_pending_operation("subj-1", token)
+    assert pending is not None and pending["consumed_at"] is None
