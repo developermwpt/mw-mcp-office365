@@ -132,6 +132,8 @@ Idênticos à [v1.0 §4](analise-funcional-v1.0.md), com a alteração transvers
 5. **Fase 4 — Ficheiros + multi-conta.**
 6. **Futuro — Tarefas (To Do/Planner), canais Teams, dashboard de auditoria, webhooks/subscrições Graph.**
 
+> **Fase adicional — Aprendizagem de comportamento de email (US-L.x):** módulo ortogonal que aprende, a partir das ações que o utilizador confirma (só metadados, opt-in), e **sugere** a ação habitual para emails parecidos. A execução de qualquer sugestão passa SEMPRE pelo two-phase approval existente (§3) — nunca há auto-execução. Detalhe em [docs/fase-aprendizagem/analise-funcional-aprendizagem.md](fase-aprendizagem/analise-funcional-aprendizagem.md).
+
 ## 11. Decisões em aberto (cliente)
 
 - Conditional Access: exceção de CA vs reautenticação periódica (§2.4).

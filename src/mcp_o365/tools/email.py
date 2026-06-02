@@ -33,6 +33,7 @@ from ..identity.mapping import IdentityMapping
 from ..observability.audit import log_audit
 from ..storage.token_store import TokenStore
 from ._session import call_graph, reauth_response, resolve_access_token
+from .learning import record_action_event
 
 logger = logging.getLogger("mcp_o365.tools.email")
 audit_logger = logging.getLogger("mcp_o365.audit")
@@ -56,6 +57,21 @@ _WELL_KNOWN_FOLDERS = {
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+# Metadados de mensagem permitidos no payload de aprovação (para a aprendizagem). NUNCA o
+# corpo — coerente com a fronteira anti prompt injection (v1.1 §4) e o só-metadados.
+_SAFE_META_KEYS = (
+    "from", "sender", "subject", "hasAttachments", "importance", "isReply",
+    "inReplyTo", "conversationId", "internetMessageHeaders", "is_newsletter", "list_id",
+)
+
+
+def _safe_meta(message_meta: dict | None) -> dict | None:
+    """Filtra metadados de mensagem para o payload de aprovação (sem corpo nem PII extra)."""
+    if not message_meta:
+        return None
+    return {k: message_meta[k] for k in _SAFE_META_KEYS if k in message_meta}
 
 
 def _domains(addresses: list[str]) -> list[str]:
@@ -283,6 +299,7 @@ async def run_email_send_prepare(
     bcc: list[str] | None = None,
     body_type: str = "Text",
     attachments: list[dict] | None = None,
+    message_meta: dict | None = None,
     account_id: str | None = None,
     clock: Callable[[], datetime] = _utcnow,
 ) -> dict:
@@ -320,6 +337,7 @@ async def run_email_send_prepare(
             "message": message,
             "recipients_count": total,
             "large_attachments": large,
+            "message_meta": _safe_meta(message_meta),
         },
         summary=summary,
     )
@@ -388,6 +406,10 @@ async def run_email_send_confirm(
             recipients_count=payload.get("recipients_count"),
             extra={"large_attachments": bool(payload.get("large_attachments"))},
         )
+        record_action_event(
+            subject, store=store, action="send",
+            message=payload.get("message_meta"), clock=clock,
+        )
         return {"operation": operation, "message": "Email enviado."}
 
     return await _confirm(approval, subject=subject, token=confirmation_token,
@@ -411,6 +433,7 @@ async def run_email_reply_prepare(
     mode: str = "reply",
     to_recipients: list[str] | None = None,
     scope_confirmed: bool = False,
+    message_meta: dict | None = None,
     account_id: str | None = None,
     clock: Callable[[], datetime] = _utcnow,
 ) -> dict:
@@ -489,6 +512,7 @@ async def run_email_reply_prepare(
             "comment": comment,
             "mode": mode,
             "to_recipients": to_recipients or [],
+            "message_meta": _safe_meta(message_meta),
         },
         summary=summary,
     )
@@ -535,6 +559,10 @@ async def run_email_reply_confirm(
             account_id=account.account_id, target=message_id,
             outcome="success", recipients_count=rcount, extra={"mode": mode},
         )
+        record_action_event(
+            subject, store=store, action=mode,
+            message=payload.get("message_meta"), clock=clock,
+        )
         return {"operation": operation, "mode": mode, "message": "Operação concluída."}
 
     return await _confirm(approval, subject=subject, token=confirmation_token,
@@ -551,6 +579,7 @@ async def run_email_move_prepare(
     approval: ApprovalEngine,
     message_id: str,
     destination: str,
+    message_meta: dict | None = None,
     account_id: str | None = None,
     clock: Callable[[], datetime] = _utcnow,
 ) -> dict:
@@ -574,7 +603,12 @@ async def run_email_move_prepare(
         subject=subject,
         account_id=account.account_id,
         operation="email.move",
-        payload={"message_id": message_id, "destination_id": destination_id},
+        payload={
+            "message_id": message_id,
+            "destination_id": destination_id,
+            "destination_name": display,
+            "message_meta": _safe_meta(message_meta),
+        },
         summary=f"Mover a mensagem {message_id} para a pasta '{display}'.",
     )
 
@@ -622,6 +656,16 @@ async def run_email_move_confirm(
             account_id=account.account_id, target=payload["message_id"],
             outcome="success", extra={"destination_id": payload["destination_id"]},
         )
+        # Arquivar é um move para a pasta de arquivo — distinguir para a aprendizagem.
+        behavior_action = (
+            "archive" if payload["destination_id"] == "archive" else "move"
+        )
+        record_action_event(
+            subject, store=store, action=behavior_action,
+            message=payload.get("message_meta"),
+            destination=payload.get("destination_name") or payload["destination_id"],
+            clock=clock,
+        )
         return {
             "operation": operation,
             "message": "Mensagem movida.",
@@ -641,6 +685,7 @@ async def run_email_delete_prepare(
     approval: ApprovalEngine,
     message_id: str,
     permanent: bool = False,
+    message_meta: dict | None = None,
     account_id: str | None = None,
     clock: Callable[[], datetime] = _utcnow,
 ) -> dict:
@@ -667,7 +712,11 @@ async def run_email_delete_prepare(
         subject=subject,
         account_id=account.account_id,
         operation="email.delete",
-        payload={"message_id": message_id, "permanent": permanent},
+        payload={
+            "message_id": message_id,
+            "permanent": permanent,
+            "message_meta": _safe_meta(message_meta),
+        },
         summary=summary,
     )
     if permanent:
@@ -727,6 +776,10 @@ async def run_email_delete_confirm(
             audit_logger, action="email.delete", subject=subject,
             account_id=account.account_id, target=payload["message_id"],
             outcome="success", extra={"permanent": is_permanent},
+        )
+        record_action_event(
+            subject, store=store, action="delete",
+            message=payload.get("message_meta"), clock=clock,
         )
         result = {
             "operation": operation,
