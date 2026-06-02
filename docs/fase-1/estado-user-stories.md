@@ -21,7 +21,7 @@
 | US-1.2 | Ler email (corpo sanitizado, `content_is_untrusted`) | ✅ | ✅ | ⬜ | HTML sanitizado (anti prompt injection); flag de não-confiança sempre presente. |
 | US-1.3 | Enviar email (prepare/confirm) | ✅ | ✅ | ⬜ | Two-phase approval + auditoria `email.send`. |
 | US-1.4 | Responder / responder-a-todos / reencaminhar | ✅ | ✅ | ⬜ | Mantém a thread; forward exige `to_recipients`; auditoria `email.reply`/`email.forward`. |
-| US-1.5 | Listar e descarregar anexos (`contentBytes`) | ✅ | ✅ | ⬜ | Leitura, sem aprovação. |
+| US-1.5 | Listar e descarregar anexos (texto extraído) | ✅ | ✅ | ⬜ | Leitura, sem aprovação. Download extrai **texto** de PDF/ficheiros de texto no servidor (`extracted_text`); base64 só com `include_bytes=True`. |
 | US-1.6 | Anexos grandes (>3MB) no envio | ✅ | ✅ | ⬜ | Upload session completo (rascunho + chunks + envio). |
 | US-1.7 | Mover email entre pastas | ✅ | ✅ | ⬜ | Resolve nome de pasta → id (bem-conhecidas + `list_folders`); auditoria `email.move`. |
 | US-1.8 | Eliminar email (soft + permanente reforçada) | ✅ | ✅ | ⬜ | Permanente recusada sem `confirm_permanent=True` (antes de consumir o token); auditoria `email.delete`. |

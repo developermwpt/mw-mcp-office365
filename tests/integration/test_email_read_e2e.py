@@ -88,11 +88,26 @@ async def test_read_sanitiza_body_html_e_marca_untrusted(mapping, store, config,
 
 
 async def test_list_attachments_e_download(mapping, store, config, clock):
-    """US-1.5 — lista anexos e, com download, devolve contentBytes."""
+    """US-1.5 — lista anexos e, com download, extrai o TEXTO do PDF no servidor.
+
+    Regressão do problema reportado: antes devolvia base64 cru e o cliente não conseguia
+    obter o valor da fatura. Agora o servidor extrai o texto (campo `extracted_text`) e os
+    bytes só seguem com `include_bytes=True`.
+    """
+    import base64
+    from pathlib import Path
+
     _link(mapping, clock)
+    pdf_bytes = (
+        Path(__file__).resolve().parents[1] / "fixtures" / "sample_invoice.pdf"
+    ).read_bytes()
+    pdf_b64 = base64.b64encode(pdf_bytes).decode()
     gc = FakeGraphClient(
-        attachments=[{"id": "a1", "name": "f.pdf", "size": 1024}],
-        attachment={"id": "a1", "name": "f.pdf", "contentBytes": "QUJD"},
+        attachments=[{"id": "a1", "name": "fatura.pdf", "size": len(pdf_bytes)}],
+        attachment={
+            "id": "a1", "name": "fatura.pdf",
+            "contentType": "application/pdf", "contentBytes": pdf_b64,
+        },
     )
     pb = _plane_b(config, clock)
 
@@ -102,17 +117,28 @@ async def test_list_attachments_e_download(mapping, store, config, clock):
     )
     assert listed["status"] == "ok"
     assert listed["count"] == 1
-    assert listed["attachments"][0]["name"] == "f.pdf"
-    assert gc.count("list_attachments") == 1
+    assert listed["attachments"][0]["name"] == "fatura.pdf"
     assert gc.count("get_attachment") == 0
 
+    # Download por defeito: texto extraído, marcado não-confiável, SEM base64.
     downloaded = await run_email_list_attachments(
         "subj-1", mapping=mapping, plane_b=pb, graph_client=gc,
         store=store, message_id="m1", download=True, attachment_id="a1", clock=clock,
     )
     assert downloaded["status"] == "ok"
-    assert downloaded["attachment"]["contentBytes"] == "QUJD"
+    assert "1234.56 EUR" in downloaded["extracted_text"]
+    assert downloaded["content_is_untrusted"] is True
+    assert downloaded["pages"] == 1
+    assert "contentBytes" not in downloaded
     assert gc.count("get_attachment") == 1
+
+    # Com include_bytes=True: os bytes em base64 também seguem.
+    with_bytes = await run_email_list_attachments(
+        "subj-1", mapping=mapping, plane_b=pb, graph_client=gc,
+        store=store, message_id="m1", download=True, attachment_id="a1",
+        include_bytes=True, clock=clock,
+    )
+    assert with_bytes["contentBytes"] == pdf_b64
 
 
 async def test_search_sem_conta_pede_reauth(mapping, store, config, clock):

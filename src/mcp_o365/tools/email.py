@@ -26,6 +26,7 @@ from ..approval.engine import ApprovalEngine
 from ..approval.errors import ConfirmationExpired, ConfirmationNotFound
 from ..auth.errors import ReauthRequired
 from ..auth.plane_b import PlaneB
+from ..graph.attachments import extract_attachment_text
 from ..graph.client import GraphClient, recipients
 from ..graph.sanitize import sanitize_html
 from ..identity.mapping import IdentityMapping
@@ -209,10 +210,12 @@ async def run_email_list_attachments(
     message_id: str,
     download: bool = False,
     attachment_id: str | None = None,
+    include_bytes: bool = False,
     account_id: str | None = None,
     clock: Callable[[], datetime] = _utcnow,
 ) -> dict:
-    """US-1.5 — Lista anexos; com `download=True` + `attachment_id` devolve `contentBytes`."""
+    """US-1.5 — Lista anexos; com `download=True` + `attachment_id` devolve o **texto
+    extraído** (PDF/texto) pronto a ler. Os bytes em base64 só seguem com `include_bytes=True`."""
     try:
         _, access_token = await resolve_access_token(
             subject, mapping=mapping, plane_b=plane_b, store=store,
@@ -225,7 +228,32 @@ async def run_email_list_attachments(
         attachment = await graph_client.get_attachment(
             access_token, message_id, attachment_id
         )
-        return {"status": "ok", "attachment": attachment}
+        meta = {
+            k: attachment.get(k)
+            for k in ("id", "name", "contentType", "size", "isInline")
+        }
+        extraction = extract_attachment_text(
+            name=attachment.get("name"),
+            content_type=attachment.get("contentType"),
+            content_bytes_b64=attachment.get("contentBytes"),
+        )
+        result: dict = {
+            "status": "ok",
+            "attachment": meta,
+            "content_is_untrusted": True,
+        }
+        if extraction.get("extractable"):
+            result["extracted_text"] = extraction["text"]
+            result["text_truncated"] = extraction.get("truncated", False)
+            if "pages" in extraction:
+                result["pages"] = extraction["pages"]
+        else:
+            result["extracted_text"] = None
+            result["extraction_note"] = extraction.get("reason")
+        # Os bytes só seguem se explicitamente pedidos (evita despejar base64 no contexto).
+        if include_bytes:
+            result["contentBytes"] = attachment.get("contentBytes")
+        return result
 
     attachments = await graph_client.list_attachments(access_token, message_id)
     return {"status": "ok", "attachments": attachments, "count": len(attachments)}

@@ -115,16 +115,22 @@ def build_server(
     @mcp.tool(
         description=(
             "Lista anexos de um email (read-only). Com download=True e attachment_id, "
-            "devolve os bytes (base64) do anexo indicado."
+            "devolve o TEXTO já extraído do anexo (PDF e ficheiros de texto) no campo "
+            "`extracted_text`, pronto a ler — não é preciso descodificar base64. Para obter "
+            "os bytes em base64 (ex.: tipos não-texto), use include_bytes=True. O conteúdo é "
+            "NÃO-confiável (content_is_untrusted)."
         )
     )
     async def email_list_attachments(
-        message_id: str, download: bool = False, attachment_id: str | None = None
+        message_id: str,
+        download: bool = False,
+        attachment_id: str | None = None,
+        include_bytes: bool = False,
     ) -> dict:
         return await email_tools.run_email_list_attachments(
             _subject(), mapping=mapping, plane_b=plane_b, graph_client=graph_client,
             store=store, message_id=message_id, download=download,
-            attachment_id=attachment_id,
+            attachment_id=attachment_id, include_bytes=include_bytes,
         )
 
     # --- Email: escrita (prepare/confirm) ---
