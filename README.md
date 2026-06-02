@@ -41,12 +41,12 @@ sem PII) e **sanitização** do corpo HTML dos emails recebidos (mitigação de 
 Ver o [estado das user stories](docs/fase-1/estado-user-stories.md) e o
 [runbook de validação](docs/fase-1/runbook-validacao-email.md).
 
-**98 testes** no total (unit + integração, Graph/Entra mockados) verdes e `ruff` limpo.
+**113 testes** no total (unit + integração, Graph/Entra mockados) verdes e `ruff` limpo.
 
-O gate **G3 (refresh do token Graph sob a Conditional Access** em dispositivo gerido) continua
-**pendente** e condiciona o **uso em produção** — não o desenvolvimento nem os testes (todos com
-Entra/Graph mockados). Validar via
-[runbook Fase 0](docs/poc-fase-0/runbook-validacao-manual.md) (connector no Claude Team
-Desktop+Mobile + refresh sob CA) e, para as escritas de email, o
-[runbook Fase 1](docs/fase-1/runbook-validacao-email.md). Só essa validação no tenant/VPS reais
-decide o go/no-go de produção.
+**Validada no tenant/VPS reais (2026-06-02):** o gate **G3** (refresh do token Graph **sob a
+Conditional Access** em dispositivo gerido) **passou** — o refresh silencioso do servidor
+mantém acesso, sem necessidade de exceção de CA. O connector liga no Claude Team Desktop+Mobile
+e as US de Email US-1.1–1.5, 1.7 e 1.8 foram exercidas no real com sucesso (ver
+[estado das user stories](docs/fase-1/estado-user-stories.md)). Falta apenas exercer no real o
+**envio de um anexo >3 MB** (US-1.6; coberto por testes automáticos). Decisões jurídicas
+(DPA/DPIA) continuam em aberto para a operação com dados reais a longo prazo.
