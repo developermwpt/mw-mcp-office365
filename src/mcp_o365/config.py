@@ -31,7 +31,8 @@ class Settings(BaseSettings):
     entra_authority: str = Field(..., alias="ENTRA_AUTHORITY")
     oauth_redirect_uri: str = Field(..., alias="OAUTH_REDIRECT_URI")
     graph_scopes_raw: str = Field(
-        "User.Read Mail.Read Mail.Send Mail.ReadWrite offline_access openid profile",
+        "User.Read Mail.Read Mail.Send Mail.ReadWrite People.Read Contacts.Read "
+        "offline_access openid profile",
         alias="GRAPH_SCOPES",
     )
 
