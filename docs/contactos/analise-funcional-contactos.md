@@ -4,7 +4,7 @@
 **Cliente:** Mobiweb
 **Produto:** Servidor MCP de Office 365 — resolução de nome → destinatário
 **Data:** 2026-06-02
-**Estado:** Análise funcional + implementação (branch `feat/contacts`). Read-only sobre o Graph.
+**Estado:** Implementado e **validado no tenant real (2026-06-02)**. Read-only sobre o Graph.
 
 > **Relação com a [v1.1](../analise-funcional-v1.1.md):** módulo transversal aos módulos
 > funcionais (serve Email e, na Fase 2, o Calendário). Reutiliza a arquitetura de identidade
