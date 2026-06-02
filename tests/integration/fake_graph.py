@@ -96,5 +96,11 @@ class FakeGraphClient:
                      attachment_item=attachment_item)
         return {"uploadUrl": "https://upload.example/x"}
 
+    async def upload_attachment_bytes(
+        self, upload_url, content_bytes, **kwargs
+    ) -> None:
+        self._record("upload_attachment_bytes", upload_url,
+                     content_bytes=content_bytes, **kwargs)
+
     async def send_draft(self, access_token, message_id) -> None:
         self._record("send_draft", access_token, message_id)

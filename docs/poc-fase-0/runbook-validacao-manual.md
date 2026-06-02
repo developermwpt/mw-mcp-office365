@@ -118,8 +118,8 @@ Preencher mapeando observações aos critérios do [plano §1.2/1.3](plano-imple
 | **G1** — connector liga (Desktop) | Ligado com sucesso no Claude Team Desktop. DCR + login no Entra concluídos. | ✅ ok |
 | **G1** — connector liga (Mobile) | Ligado com sucesso no Claude Team Mobile. | ✅ ok |
 | **G2** — `whoami` end-to-end | Devolveu `marcio.martins@mobiweb.pt` / Márcio Martins via Graph `User.Read`. | ✅ ok |
-| **G3** — refresh passa (direto **ou** com exceção de CA aceitável) | Por testar (~1h após login ou com Token Lifetime Policy reduzida). | ⬜ pendente |
-| Reauth graciosa (Passo 7) | Por testar (dependente de G3). | ⬜ pendente |
+| **G3** — refresh passa (direto **ou** com exceção de CA aceitável) | Testado em 2026-06-02: o refresh silencioso do servidor **manteve acesso** sob a CA atual; **sem** necessidade de exceção de CA (named location). | ✅ ok |
+| Reauth graciosa (Passo 7) | Coberta por teste automático (`test_invalid_grant_reauth_graciosa`); validação manual no real ainda por fazer. | ⬜ pendente |
 
 Anexar os excertos de log relevantes (sobretudo os eventos `refresh_failure`, se houver) e a
 política de CA aplicada no Passo 6.

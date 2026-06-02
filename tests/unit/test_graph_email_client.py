@@ -10,7 +10,7 @@ from __future__ import annotations
 import httpx
 import respx
 
-from mcp_o365.graph.client import GraphClient
+from mcp_o365.graph.client import GraphClient, GraphError
 
 BASE = "https://graph.microsoft.com/v1.0"
 
@@ -181,3 +181,32 @@ async def test_429_respeita_retry_after_e_repete():
     assert out is None
     assert slept == [3.0]  # respeitou Retry-After (via sleeper, sem dormir) e repetiu
     assert len(route.calls) == 2
+
+
+@respx.mock
+async def test_upload_attachment_bytes_em_chunks_sem_bearer():
+    """US-1.6 — bytes carregados em chunks com Content-Range; uploadUrl sem Authorization."""
+    url = "https://upload.example/session"
+    route = respx.put(url).mock(return_value=httpx.Response(202))
+    gc = _client()
+    await gc.upload_attachment_bytes(url, b"0123456789", chunk_size=4)
+
+    ranges = [c.request.headers["Content-Range"] for c in route.calls]
+    assert ranges == ["bytes 0-3/10", "bytes 4-7/10", "bytes 8-9/10"]
+    # A uploadUrl é pré-autenticada — não se envia o Bearer.
+    assert "authorization" not in {k.lower() for k in route.calls[0].request.headers}
+    # Os bytes reconstruídos batem certo com o original.
+    sent = b"".join(c.request.content for c in route.calls)
+    assert sent == b"0123456789"
+
+
+@respx.mock
+async def test_upload_attachment_bytes_erro_levanta_grapherror():
+    url = "https://upload.example/session"
+    respx.put(url).mock(return_value=httpx.Response(500, text="boom"))
+    gc = _client()
+    try:
+        await gc.upload_attachment_bytes(url, b"abc", chunk_size=4)
+        raise AssertionError("devia ter levantado GraphError")
+    except GraphError:
+        pass

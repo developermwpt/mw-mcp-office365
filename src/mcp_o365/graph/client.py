@@ -21,6 +21,8 @@ from ..auth.errors import UpstreamAuthError
 
 DEFAULT_GRAPH_BASE = "https://graph.microsoft.com/v1.0"
 _MAX_RETRIES_429 = 3
+# Tamanho de chunk para upload de anexos grandes: múltiplo de 320 KiB (requisito Graph).
+_UPLOAD_CHUNK_SIZE = 320 * 1024 * 10  # ~3,2 MB
 
 
 async def _real_sleeper(seconds: float) -> None:
@@ -246,6 +248,37 @@ class GraphClient:
             json_body={"AttachmentItem": attachment_item},
         ) or {}
         return data
+
+    async def upload_attachment_bytes(
+        self,
+        upload_url: str,
+        content_bytes: bytes,
+        *,
+        chunk_size: int = _UPLOAD_CHUNK_SIZE,
+    ) -> None:
+        """Carrega os bytes de um anexo grande para a `uploadUrl` da sessão, em chunks.
+
+        A `uploadUrl` é pré-autenticada (SAS-like) — NÃO se envia o `Bearer`; é um PUT a uma
+        URL absoluta. Cada chunk leva `Content-Range: bytes {ini}-{fim}/{total}`. O Graph
+        aceita chunks múltiplos de 320 KiB; o último pode ser menor e devolve 201/200.
+        """
+        total = len(content_bytes)
+        if total == 0:
+            return
+        start = 0
+        while start < total:
+            end = min(start + chunk_size, total) - 1
+            chunk = content_bytes[start : end + 1]
+            headers = {
+                "Content-Length": str(len(chunk)),
+                "Content-Range": f"bytes {start}-{end}/{total}",
+            }
+            resp = await self._http.put(upload_url, content=chunk, headers=headers)
+            if resp.status_code >= 400:
+                raise GraphError(
+                    f"Upload de anexo falhou ({resp.status_code}): {resp.text[:200]}"
+                )
+            start = end + 1
 
     async def send_draft(self, access_token: str, message_id: str) -> None:
         """`POST /me/messages/{id}/send` — envia um rascunho previamente criado."""

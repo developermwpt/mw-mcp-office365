@@ -1,10 +1,10 @@
 # Fase 1 — Módulo Email: estado das user stories
 
-> **Gate G3 pendente.** O refresh do token Graph **sob Conditional Access** (dispositivo
-> gerido) ainda não foi validado no tenant real e **condiciona o uso em produção** — não o
-> desenvolvimento nem os testes automáticos (todos com Entra/Graph mockados). O go/no-go de
-> produção depende do [runbook de validação](runbook-validacao-email.md) e do
-> [runbook Fase 0](../poc-fase-0/runbook-validacao-manual.md).
+> **Gate G3 ✅ validado (2026-06-02).** O refresh do token Graph **sob Conditional Access**
+> (dispositivo gerido) foi testado no tenant real e **manteve acesso** — o refresh silencioso
+> do servidor não é bloqueado pela CA atual. O bloqueador central da PoC está ultrapassado;
+> não é preciso exceção de CA (named location). Admin consent concedido para
+> `Mail.Read`/`Mail.Send`/`Mail.ReadWrite`.
 
 ## Legenda
 
@@ -22,21 +22,19 @@
 | US-1.3 | Enviar email (prepare/confirm) | ✅ | ✅ | ⬜ | Two-phase approval + auditoria `email.send`. |
 | US-1.4 | Responder / responder-a-todos / reencaminhar | ✅ | ✅ | ⬜ | Mantém a thread; forward exige `to_recipients`; auditoria `email.reply`/`email.forward`. |
 | US-1.5 | Listar e descarregar anexos (`contentBytes`) | ✅ | ✅ | ⬜ | Leitura, sem aprovação. |
-| US-1.6 | Anexos grandes (>3MB) no envio | ✅ (parcial) | ✅ | ⬜ | **Limite conhecido** — ver abaixo. |
+| US-1.6 | Anexos grandes (>3MB) no envio | ✅ | ✅ | ⬜ | Upload session completo (rascunho + chunks + envio). |
 | US-1.7 | Mover email entre pastas | ✅ | ✅ | ⬜ | Resolve nome de pasta → id (bem-conhecidas + `list_folders`); auditoria `email.move`. |
 | US-1.8 | Eliminar email (soft + permanente reforçada) | ✅ | ✅ | ⬜ | Permanente recusada sem `confirm_permanent=True` (antes de consumir o token); auditoria `email.delete`. |
 
-## Limite conhecido — US-1.6 (anexos > 3 MB)
+## US-1.6 — anexos > 3 MB (completo)
 
-Anexos acima de 3 MB não podem ir inline no `POST /me/sendMail`. O fluxo correto está
-implementado e testado: o `send_prepare` marca `large_attachments=true` e o `send_confirm`
+Anexos acima de 3 MB não podem ir inline no `POST /me/sendMail`. O fluxo está implementado
+ponta-a-ponta e testado: o `send_prepare` marca `large_attachments=true` e o `send_confirm`
 segue o caminho de **rascunho** — `create_draft` (com os anexos inline ≤3MB) +
-`create_attachment_upload_session` (por anexo grande) + `send_draft`.
-
-**TODO:** o upload efetivo dos **bytes do anexo em chunks** via `uploadUrl` da sessão ainda
-não está implementado (está documentado como TODO em `tools/email.py`). Até lá, o caminho
-totalmente funcional ponta-a-ponta é o **inline (≤3 MB)**; anexos grandes criam a sessão de
-upload mas os bytes não são transferidos.
+`create_attachment_upload_session` (por anexo grande) + **`upload_attachment_bytes`** (PUT dos
+bytes em chunks de 320 KiB com `Content-Range`, na `uploadUrl` pré-autenticada, sem `Bearer`)
++ `send_draft`. Coberto por `test_upload_attachment_bytes_em_chunks_sem_bearer` e pelo E2E
+`test_send_anexo_grande_*`.
 
 ## Garantias transversais (verificadas por testes)
 

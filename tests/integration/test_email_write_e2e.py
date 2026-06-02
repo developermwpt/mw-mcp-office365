@@ -153,8 +153,12 @@ async def test_send_anexo_grande_marca_flag_e_segue_caminho_draft(
     # NÃO usa o sendMail inline.
     assert gc.count("create_draft") == 1
     assert gc.count("create_attachment_upload_session") == 1
+    assert gc.count("upload_attachment_bytes") == 1
     assert gc.count("send_draft") == 1
     assert gc.count("send_mail") == 0
+    # Os bytes carregados são os do anexo, descodificados de base64 ("QUJD" -> b"ABC").
+    upload = next(c for c in gc.calls if c[0] == "upload_attachment_bytes")
+    assert upload[2]["content_bytes"] == b"ABC"
 
 
 # ===================== US-1.4 — RESPONDER / REENCAMINHAR =====================

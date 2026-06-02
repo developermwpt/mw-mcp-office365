@@ -17,6 +17,7 @@ Modelo de segurança:
 
 from __future__ import annotations
 
+import base64
 import logging
 from collections.abc import Callable
 from datetime import datetime, timezone
@@ -316,9 +317,9 @@ async def run_email_send_confirm(
     async def executor(operation: str, payload: dict) -> dict:
         message = payload["message"]
         if payload.get("large_attachments"):
-            # Caminho preparado de anexos grandes: cria rascunho, abre upload session por
-            # anexo e envia o rascunho. O upload dos bytes em chunks por HTTP fica como
-            # TODO documentado — o limite totalmente suportado é o inline (<=3MB).
+            # Caminho de anexos grandes (>3MB): cria um rascunho com os anexos inline
+            # (<=3MB), abre uma upload session por anexo grande, carrega os bytes em chunks
+            # e só então envia o rascunho.
             inline = [
                 a for a in message.get("attachments", [])
                 if not _att_is_large(a)
@@ -327,17 +328,21 @@ async def run_email_send_confirm(
             draft = await graph_client.create_draft(access_token, draft_msg)
             draft_id = draft.get("id")
             for att in message.get("attachments", []):
-                if _att_is_large(att):
-                    await graph_client.create_attachment_upload_session(
-                        access_token,
-                        draft_id,
-                        attachment_item={
-                            "attachmentType": "file",
-                            "name": att.get("name"),
-                            "size": att.get("size"),
-                        },
-                    )
-                    # TODO: upload dos bytes do anexo em chunks via uploadUrl da sessão.
+                if not _att_is_large(att):
+                    continue
+                raw = base64.b64decode(att.get("contentBytes") or "")
+                session = await graph_client.create_attachment_upload_session(
+                    access_token,
+                    draft_id,
+                    attachment_item={
+                        "attachmentType": "file",
+                        "name": att.get("name"),
+                        "size": len(raw),
+                    },
+                )
+                upload_url = session.get("uploadUrl") if session else None
+                if upload_url:
+                    await graph_client.upload_attachment_bytes(upload_url, raw)
             await graph_client.send_draft(access_token, draft_id)
         else:
             await graph_client.send_mail(access_token, message=message)
