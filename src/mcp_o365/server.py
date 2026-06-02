@@ -27,6 +27,7 @@ from .identity.mapping import IdentityMapping
 from .learning.recommender import Recommender
 from .observability import health
 from .storage.token_store import TokenStore
+from .tools import contacts as contacts_tools
 from .tools import email as email_tools
 from .tools import learning as learning_tools
 from .tools.whoami import run_whoami
@@ -63,7 +64,10 @@ def build_server(
             "fases (chame o `prepare_tool` indicado e depois o `*_confirm`) — NUNCA "
             "automaticamente. Consentimento e esquecimento: `learning_opt_in` e "
             "`learning_forget`. Ao chamar um `*_prepare` de email pode passar `message_meta` "
-            "(os metadados do email já lidos) para enriquecer a aprendizagem — nunca o corpo."
+            "(os metadados do email já lidos) para enriquecer a aprendizagem — nunca o corpo. "
+            "Quando o utilizador indicar um destinatário por NOME (ex.: 'manda à Vera'), use "
+            "`resolve_recipient` para obter o email e CONFIRME o candidato antes de preparar o "
+            "envio; se houver vários, pergunte qual."
         ),
         auth=build_auth_settings(config),
         auth_server_provider=provider,
@@ -320,6 +324,21 @@ def build_server(
     async def learning_purge_expired() -> dict:
         return await learning_tools.run_learning_purge_expired(
             _subject(), store=store, retention_days=config.learning_retention_days,
+        )
+
+    # --- Contactos (US-5.x): resolução de destinatários por nome (read-only) ---
+    @mcp.tool(
+        description=(
+            "Resolve um NOME (ex.: 'vera') em candidatos a destinatário (read-only), juntando "
+            "People + Contactos. NÃO envia nem agenda. status: not_found | ok (1 candidato) | "
+            "needs_clarification (vários — PERGUNTE ao utilizador qual usar). Use o email "
+            "escolhido no email_send_prepare / agendamento. NUNCA escolha sozinho se ambíguo."
+        )
+    )
+    async def resolve_recipient(name: str, top: int = 10) -> dict:
+        return await contacts_tools.run_resolve_recipient(
+            _subject(), mapping=mapping, plane_b=plane_b, graph_client=graph_client,
+            store=store, name=name, top=top,
         )
 
     @mcp.custom_route("/callback", methods=["GET"], name="entra_callback")

@@ -61,6 +61,47 @@ class GraphClient:
             "userPrincipalName": data.get("userPrincipalName"),
         }
 
+    # --- contactos: resolução de destinatários (read-only) ---
+    async def search_people(
+        self, access_token: str, query: str, *, top: int = 10
+    ) -> list[dict]:
+        """`GET /me/people?$search` — pessoas relevantes (ranking do Graph)."""
+        data = await self._request(
+            "GET", "/me/people", access_token,
+            params={"$search": f'"{query}"', "$top": top},
+        ) or {}
+        out: list[dict] = []
+        for p in data.get("value", []):
+            email = None
+            scored = p.get("scoredEmailAddresses") or []
+            if scored:
+                email = scored[0].get("address")
+            if not email:
+                emails = p.get("emailAddresses") or []
+                if emails:
+                    email = emails[0].get("address")
+            out.append(
+                {"display_name": p.get("displayName"), "email": email, "source": "people"}
+            )
+        return out
+
+    async def search_contacts(
+        self, access_token: str, query: str, *, top: int = 10
+    ) -> list[dict]:
+        """`GET /me/contacts?$search` — contactos pessoais do utilizador."""
+        data = await self._request(
+            "GET", "/me/contacts", access_token,
+            params={"$search": f'"{query}"', "$top": top},
+        ) or {}
+        out: list[dict] = []
+        for c in data.get("value", []):
+            emails = c.get("emailAddresses") or []
+            email = emails[0].get("address") if emails else None
+            out.append(
+                {"display_name": c.get("displayName"), "email": email, "source": "contacts"}
+            )
+        return out
+
     # --- email: leitura ---
     async def list_messages(
         self,

@@ -28,6 +28,8 @@ class FakeGraphClient:
         folders: list[dict] | None = None,
         moved: dict | None = None,
         draft: dict | None = None,
+        people: list[dict] | None = None,
+        contacts: list[dict] | None = None,
         auth_fail: dict[str, int] | None = None,
     ) -> None:
         self.calls: list[tuple[str, tuple, dict]] = []
@@ -38,6 +40,8 @@ class FakeGraphClient:
         self._folders = folders or []
         self._moved = moved or {"id": "msg-novo"}
         self._draft = draft or {"id": "draft-1"}
+        self._people = people if people is not None else []
+        self._contacts = contacts if contacts is not None else []
         # Nº de vezes que cada método deve simular um 401/403 do Graph antes de ter sucesso.
         self._auth_fail = dict(auth_fail or {})
 
@@ -95,6 +99,15 @@ class FakeGraphClient:
 
     async def permanent_delete(self, access_token, message_id) -> None:
         self._record("permanent_delete", access_token, message_id)
+
+    # --- contactos ---
+    async def search_people(self, access_token, query, *, top=10) -> list[dict]:
+        self._record("search_people", access_token, query, top=top)
+        return self._people
+
+    async def search_contacts(self, access_token, query, *, top=10) -> list[dict]:
+        self._record("search_contacts", access_token, query, top=top)
+        return self._contacts
 
     # --- anexos grandes (upload session) ---
     async def create_draft(self, access_token, message) -> dict:
