@@ -31,7 +31,8 @@ class Settings(BaseSettings):
     entra_authority: str = Field(..., alias="ENTRA_AUTHORITY")
     oauth_redirect_uri: str = Field(..., alias="OAUTH_REDIRECT_URI")
     graph_scopes_raw: str = Field(
-        "User.Read offline_access openid profile", alias="GRAPH_SCOPES"
+        "User.Read Mail.Read Mail.Send Mail.ReadWrite offline_access openid profile",
+        alias="GRAPH_SCOPES",
     )
 
     # --- Plano A (MCP <-> Claude) ---
@@ -41,6 +42,9 @@ class Settings(BaseSettings):
     # --- Token store / cifra ---
     token_store_path: str = Field("./tokens.db", alias="TOKEN_STORE_PATH")
     token_encryption_key: SecretStr = Field(..., alias="TOKEN_ENCRYPTION_KEY")
+
+    # --- Aprovação em duas fases ---
+    approval_ttl_seconds: int = Field(300, alias="APPROVAL_TTL_SECONDS")
 
     # --- Runtime ---
     log_level: str = Field("INFO", alias="LOG_LEVEL")

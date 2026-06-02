@@ -5,9 +5,10 @@
 A lógica vive em `run_whoami`, independente do transporte MCP, para ser testável com
 Graph/Entra mockados.
 
-Em `invalid_grant` (refresh rejeitado, p.ex. pela Conditional Access) NÃO rebenta: marca a
-sessão como expirada e devolve uma mensagem de re-login — a reautenticação graciosa exigida
-pela v1.1 §2.2.
+A resolução de conta + refresh foi extraída para `_session.resolve_access_token` (usada
+por todas as tools). Em `invalid_grant` (refresh rejeitado, p.ex. pela Conditional Access)
+NÃO rebenta: o helper levanta `ReauthRequired` e aqui converte-se para a mensagem de
+re-login — a reautenticação graciosa exigida pela v1.1 §2.2.
 """
 
 from __future__ import annotations
@@ -21,11 +22,9 @@ from ..auth.plane_b import PlaneB
 from ..graph.client import GraphClient
 from ..identity.mapping import IdentityMapping
 from ..storage.token_store import TokenStore
+from ._session import reauth_response, resolve_access_token
 
 logger = logging.getLogger("mcp_o365.tools.whoami")
-
-# Margem antes da expiração: renova proativamente para evitar 401 a meio.
-_REFRESH_SKEW_SECONDS = 60
 
 
 def _utcnow() -> datetime:
@@ -43,55 +42,17 @@ async def run_whoami(
     clock: Callable[[], datetime] = _utcnow,
 ) -> dict:
     """Resolve a identidade do utilizador via Graph. Devolve um dict serializável."""
-    if not subject:
-        return {"status": "reauth_required", "message": "Sessão não autenticada. Inicie sessão."}
-
-    account = mapping.select_account(subject, account_id)
-    if account is None:
-        return {
-            "status": "reauth_required",
-            "message": "Nenhuma conta Office 365 ligada. Inicie sessão para ligar a sua conta.",
-        }
-
-    access_token = account.access_token
-    now = clock()
-    needs_refresh = (
-        access_token is None
-        or account.expires_at is None
-        or (account.expires_at.timestamp() - now.timestamp()) < _REFRESH_SKEW_SECONDS
-    )
-
-    if needs_refresh:
-        if not account.refresh_token:
-            mapping.mark_expired(subject, account.account_id)
-            return {
-                "status": "reauth_required",
-                "message": "Sessão expirada. Volte a iniciar sessão.",
-            }
-        try:
-            refreshed = plane_b.refresh(
-                refresh_token=account.refresh_token,
-                scopes=account.scopes or None,
-                subject_for_log=subject,
-                account_id_for_log=account.account_id,
-            )
-        except ReauthRequired:
-            # Inclui InvalidGrant — o sinal típico de bloqueio pela Conditional Access.
-            mapping.mark_expired(subject, account.account_id)
-            return {
-                "status": "reauth_required",
-                "message": (
-                    "A sua sessão expirou ou foi revogada. Volte a iniciar sessão no Claude."
-                ),
-            }
-        access_token = refreshed.access_token
-        store.update_account_tokens(
-            subject=subject,
-            account_id=account.account_id,
-            access_token=refreshed.access_token,
-            refresh_token=refreshed.refresh_token,
-            expires_at=refreshed.expires_at,
+    try:
+        account, access_token = await resolve_access_token(
+            subject,
+            mapping=mapping,
+            plane_b=plane_b,
+            store=store,
+            account_id=account_id,
+            clock=clock,
         )
+    except ReauthRequired as exc:
+        return reauth_response(str(exc))
 
     identity = await graph_client.me(access_token)
     return {

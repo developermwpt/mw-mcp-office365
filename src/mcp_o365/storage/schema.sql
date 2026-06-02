@@ -76,3 +76,20 @@ CREATE TABLE IF NOT EXISTS refresh_tokens (
     scopes     TEXT,
     expires_at TEXT
 );
+
+-- Operações de escrita pendentes do fluxo de aprovação em duas fases (prepare->confirm).
+-- O `token` é simultaneamente token de uso único e idempotency key. Payload e resultado
+-- são cifrados (Cipher). Isolamento por `subject` em todas as queries.
+CREATE TABLE IF NOT EXISTS pending_operations (
+    token        TEXT PRIMARY KEY,
+    subject      TEXT NOT NULL,
+    account_id   TEXT,
+    operation    TEXT NOT NULL,
+    payload_enc  BLOB NOT NULL,     -- JSON cifrado (Cipher)
+    summary      TEXT NOT NULL,
+    created_at   TEXT NOT NULL,
+    expires_at   TEXT NOT NULL,
+    consumed_at  TEXT,              -- NULL até confirmar
+    result_enc   BLOB               -- JSON cifrado do resultado (idempotência)
+);
+CREATE INDEX IF NOT EXISTS idx_pending_subject ON pending_operations(subject);

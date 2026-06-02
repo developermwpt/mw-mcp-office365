@@ -11,6 +11,7 @@ protegida por um lock (suporta `:memory:` nos testes).
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import threading
 import uuid
@@ -421,5 +422,74 @@ class TokenStore:
         with self._lock:
             self._conn.execute(
                 f"DELETE FROM {table} WHERE token=?", (token,)  # noqa: S608 (nome fixo)
+            )
+            self._conn.commit()
+
+    # --- operações pendentes (aprovação em duas fases) ---
+    def save_pending_operation(
+        self,
+        *,
+        token: str,
+        subject: str,
+        account_id: str | None,
+        operation: str,
+        payload: dict,
+        summary: str,
+        expires_at: datetime,
+    ) -> None:
+        """Grava uma operação de escrita pendente; o payload é cifrado (JSON)."""
+        payload_enc = self._cipher.encrypt_str(json.dumps(payload))
+        with self._lock:
+            self._conn.execute(
+                """INSERT INTO pending_operations(
+                       token, subject, account_id, operation, payload_enc, summary,
+                       created_at, expires_at)
+                   VALUES (?,?,?,?,?,?,?,?)""",
+                (
+                    token, subject, account_id, operation, payload_enc, summary,
+                    _iso(self._clock()), _iso(expires_at),
+                ),
+            )
+            self._conn.commit()
+
+    def get_pending_operation(self, subject: str, token: str) -> dict | None:
+        """Lê uma operação pendente filtrando por subject E token — isolamento."""
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT * FROM pending_operations WHERE subject=? AND token=?",
+                (subject, token),
+            )
+            row = cur.fetchone()
+        if not row:
+            return None
+        payload = json.loads(self._cipher.decrypt_str(row["payload_enc"]))
+        result = (
+            json.loads(self._cipher.decrypt_str(row["result_enc"]))
+            if row["result_enc"] else None
+        )
+        return {
+            "token": row["token"],
+            "subject": row["subject"],
+            "account_id": row["account_id"],
+            "operation": row["operation"],
+            "payload": payload,
+            "summary": row["summary"],
+            "created_at": _parse(row["created_at"]),
+            "expires_at": _parse(row["expires_at"]),
+            "consumed_at": _parse(row["consumed_at"]),
+            "result": result,
+        }
+
+    def mark_pending_consumed(
+        self, *, subject: str, token: str, result: dict
+    ) -> None:
+        """Marca a operação como consumida e grava o resultado cifrado (idempotência)."""
+        result_enc = self._cipher.encrypt_str(json.dumps(result))
+        with self._lock:
+            self._conn.execute(
+                """UPDATE pending_operations
+                   SET consumed_at=?, result_enc=?
+                   WHERE subject=? AND token=?""",
+                (_iso(self._clock()), result_enc, subject, token),
             )
             self._conn.commit()

@@ -11,6 +11,7 @@ import logging
 
 import httpx
 
+from .approval.engine import ApprovalEngine
 from .auth.plane_a import MwOAuthProvider
 from .auth.plane_b import PlaneB
 from .config import Settings, load_settings
@@ -34,6 +35,7 @@ def build_components(config: Settings) -> dict:
         store=store, plane_b=plane_b, mapping=mapping, config=config
     )
     graph_client = GraphClient(httpx.AsyncClient(timeout=30.0))
+    approval = ApprovalEngine(store, ttl_seconds=config.approval_ttl_seconds)
     server = build_server(
         config=config,
         provider=provider,
@@ -41,6 +43,7 @@ def build_components(config: Settings) -> dict:
         plane_b=plane_b,
         graph_client=graph_client,
         store=store,
+        approval=approval,
     )
     return {
         "config": config,
@@ -50,6 +53,7 @@ def build_components(config: Settings) -> dict:
         "plane_b": plane_b,
         "provider": provider,
         "graph_client": graph_client,
+        "approval": approval,
         "server": server,
     }
 
