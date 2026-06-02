@@ -167,7 +167,10 @@ def build_server(
     @mcp.tool(
         description=(
             "FASE 1/2 — Prepara responder/responder-a-todos/reencaminhar (NÃO executa). "
-            "mode in {reply, reply_all, forward}; forward exige to_recipients."
+            "mode in {reply, reply_all, forward}; forward exige to_recipients. Se mode='reply' "
+            "e o email tiver vários destinatários, devolve status='needs_clarification' (sem "
+            "token): PERGUNTE ao utilizador se quer responder só ao remetente (repita com "
+            "scope_confirmed=true) ou a todos (repita com mode='reply_all'). NÃO assuma."
         )
     )
     async def email_reply_prepare(
@@ -175,11 +178,13 @@ def build_server(
         comment: str,
         mode: str = "reply",
         to_recipients: list[str] | None = None,
+        scope_confirmed: bool = False,
     ) -> dict:
         return await email_tools.run_email_reply_prepare(
-            _subject(), mapping=mapping, plane_b=plane_b, store=store, approval=approval,
+            _subject(), mapping=mapping, plane_b=plane_b, graph_client=graph_client,
+            store=store, approval=approval,
             message_id=message_id, comment=comment, mode=mode,
-            to_recipients=to_recipients,
+            to_recipients=to_recipients, scope_confirmed=scope_confirmed,
         )
 
     @mcp.tool(

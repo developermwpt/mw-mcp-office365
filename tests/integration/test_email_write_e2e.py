@@ -171,11 +171,12 @@ async def test_reply_prepare_confirm_e_idempotente(mapping, store, config, clock
     pb = _plane_b(config, clock)
 
     prepared = await run_email_reply_prepare(
-        "subj-1", mapping=mapping, plane_b=pb, store=store, approval=approval,
-        message_id="m1", comment="Obrigado", mode="reply", clock=clock,
+        "subj-1", mapping=mapping, plane_b=pb, graph_client=gc, store=store,
+        approval=approval, message_id="m1", comment="Obrigado", mode="reply", clock=clock,
     )
     assert prepared["status"] == "pending_confirmation"
-    assert gc.calls == []  # prepare não toca no Graph
+    # prepare pode LER (para contar destinatários) mas nunca ESCREVE antes do confirm.
+    assert gc.count("reply") == 0 and gc.count("forward") == 0
 
     token = prepared["confirmation_token"]
     await run_email_reply_confirm(
@@ -195,8 +196,9 @@ async def test_reply_all(mapping, store, config, clock):
     approval = _approval(store, clock)
     pb = _plane_b(config, clock)
     prepared = await run_email_reply_prepare(
-        "subj-1", mapping=mapping, plane_b=pb, store=store, approval=approval,
-        message_id="m1", comment="Para todos", mode="reply_all", clock=clock,
+        "subj-1", mapping=mapping, plane_b=pb, graph_client=gc, store=store,
+        approval=approval, message_id="m1", comment="Para todos", mode="reply_all",
+        clock=clock,
     )
     await run_email_reply_confirm(
         "subj-1", mapping=mapping, plane_b=pb, graph_client=gc, store=store,
@@ -214,8 +216,8 @@ async def test_forward(mapping, store, config, clock):
     approval = _approval(store, clock)
     pb = _plane_b(config, clock)
     prepared = await run_email_reply_prepare(
-        "subj-1", mapping=mapping, plane_b=pb, store=store, approval=approval,
-        message_id="m1", comment="FYI", mode="forward",
+        "subj-1", mapping=mapping, plane_b=pb, graph_client=gc, store=store,
+        approval=approval, message_id="m1", comment="FYI", mode="forward",
         to_recipients=["novo@example.com"], clock=clock,
     )
     assert prepared["status"] == "pending_confirmation"
@@ -231,7 +233,8 @@ async def test_forward(mapping, store, config, clock):
 async def test_forward_sem_destinatarios_erro(mapping, store, config, clock):
     _link(mapping, clock)
     out = await run_email_reply_prepare(
-        "subj-1", mapping=mapping, plane_b=_plane_b(config, clock), store=store,
+        "subj-1", mapping=mapping, plane_b=_plane_b(config, clock),
+        graph_client=FakeGraphClient(), store=store,
         approval=_approval(store, clock), message_id="m1", comment="x",
         mode="forward", clock=clock,
     )
@@ -241,7 +244,8 @@ async def test_forward_sem_destinatarios_erro(mapping, store, config, clock):
 async def test_reply_mode_invalido_erro(mapping, store, config, clock):
     _link(mapping, clock)
     out = await run_email_reply_prepare(
-        "subj-1", mapping=mapping, plane_b=_plane_b(config, clock), store=store,
+        "subj-1", mapping=mapping, plane_b=_plane_b(config, clock),
+        graph_client=FakeGraphClient(), store=store,
         approval=_approval(store, clock), message_id="m1", comment="x",
         mode="modo-que-nao-existe", clock=clock,
     )
@@ -302,7 +306,11 @@ async def test_delete_soft_prepare_confirm(mapping, store, config, clock, caplog
             clock=clock,
         )
     assert out["status"] == "done"
-    assert gc.count("delete_message") == 1
+    # Soft delete = mover explicitamente para Itens Eliminados (não hard delete).
+    assert gc.count("move_message") == 1
+    assert gc.count("permanent_delete") == 0
+    move = next(c for c in gc.calls if c[0] == "move_message")
+    assert move[2]["destination_id"] == "deleteditems"
     assert any(e["action"] == "email.delete" for e in _audit_events(caplog))
 
 
@@ -328,7 +336,7 @@ async def test_delete_permanente_sem_confirmacao_reforcada_nao_apaga(
         approval=approval, confirmation_token=token, clock=clock,
     )
     assert blocked["status"] == "error"
-    assert gc.count("delete_message") == 0
+    assert gc.count("permanent_delete") == 0 and gc.count("move_message") == 0
 
     # Com confirm_permanent=True: o mesmo token ainda é válido e apaga.
     ok = await run_email_delete_confirm(
@@ -336,7 +344,9 @@ async def test_delete_permanente_sem_confirmacao_reforcada_nao_apaga(
         approval=approval, confirmation_token=token, confirm_permanent=True, clock=clock,
     )
     assert ok["status"] == "done"
-    assert gc.count("delete_message") == 1
+    # Permanente = ação permanentDelete real (não soft/move).
+    assert gc.count("permanent_delete") == 1
+    assert gc.count("move_message") == 0
 
 
 # ===================== REAUTH numa escrita =====================
@@ -379,8 +389,8 @@ async def test_forward_confirm_recupera_de_401_transparente(mapping, store, conf
     pb = _plane_b(config, clock)
 
     prepared = await run_email_reply_prepare(
-        "subj-1", mapping=mapping, plane_b=pb, store=store, approval=approval,
-        message_id="m1", comment="FYI", mode="forward",
+        "subj-1", mapping=mapping, plane_b=pb, graph_client=gc, store=store,
+        approval=approval, message_id="m1", comment="FYI", mode="forward",
         to_recipients=["accounting@mobiweb.pt"], clock=clock,
     )
     confirmed = await run_email_reply_confirm(
@@ -403,8 +413,8 @@ async def test_forward_confirm_401_persistente_reauth_e_token_reutilizavel(
     pb = _plane_b(config, clock)
 
     prepared = await run_email_reply_prepare(
-        "subj-1", mapping=mapping, plane_b=pb, store=store, approval=approval,
-        message_id="m1", comment="FYI", mode="forward",
+        "subj-1", mapping=mapping, plane_b=pb, graph_client=gc, store=store,
+        approval=approval, message_id="m1", comment="FYI", mode="forward",
         to_recipients=["accounting@mobiweb.pt"], clock=clock,
     )
     token = prepared["confirmation_token"]
@@ -416,3 +426,56 @@ async def test_forward_confirm_401_persistente_reauth_e_token_reutilizavel(
     # O token de confirmação continua por consumir -> pode repetir-se após o re-login.
     pending = store.get_pending_operation("subj-1", token)
     assert pending is not None and pending["consumed_at"] is None
+
+
+# ===== US-1.4 — desambiguação reply vs reply_all (vários destinatários) =====
+
+
+def _multi_recipient_msg() -> dict:
+    return {
+        "id": "m1",
+        "toRecipients": ["a@x.com", "b@x.com"],
+        "ccRecipients": ["c@x.com"],
+    }
+
+
+async def test_reply_com_varios_destinatarios_pede_clarificacao(mapping, store, config, clock):
+    """mode='reply' + vários destinatários -> needs_clarification, sem criar token."""
+    _link(mapping, clock)
+    gc = FakeGraphClient(message=_multi_recipient_msg())
+    approval = _approval(store, clock)
+    pb = _plane_b(config, clock)
+    out = await run_email_reply_prepare(
+        "subj-1", mapping=mapping, plane_b=pb, graph_client=gc, store=store,
+        approval=approval, message_id="m1", comment="ok", mode="reply", clock=clock,
+    )
+    assert out["status"] == "needs_clarification"
+    assert out["recipients_in_thread"] == 3
+    assert "confirmation_token" not in out
+
+
+async def test_reply_scope_confirmed_avanca_sem_perguntar(mapping, store, config, clock):
+    """Com scope_confirmed=True, responde só ao remetente sem perguntar."""
+    _link(mapping, clock)
+    gc = FakeGraphClient(message=_multi_recipient_msg())
+    approval = _approval(store, clock)
+    pb = _plane_b(config, clock)
+    out = await run_email_reply_prepare(
+        "subj-1", mapping=mapping, plane_b=pb, graph_client=gc, store=store,
+        approval=approval, message_id="m1", comment="ok", mode="reply",
+        scope_confirmed=True, clock=clock,
+    )
+    assert out["status"] == "pending_confirmation"
+
+
+async def test_reply_unico_destinatario_nao_pergunta(mapping, store, config, clock):
+    """Com um só destinatário, reply avança sem clarificação."""
+    _link(mapping, clock)
+    gc = FakeGraphClient(message={"id": "m1", "toRecipients": ["so-um@x.com"]})
+    approval = _approval(store, clock)
+    pb = _plane_b(config, clock)
+    out = await run_email_reply_prepare(
+        "subj-1", mapping=mapping, plane_b=pb, graph_client=gc, store=store,
+        approval=approval, message_id="m1", comment="ok", mode="reply", clock=clock,
+    )
+    assert out["status"] == "pending_confirmation"

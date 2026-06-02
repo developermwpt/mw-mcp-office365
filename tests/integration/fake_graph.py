@@ -93,6 +93,9 @@ class FakeGraphClient:
     async def delete_message(self, access_token, message_id) -> None:
         self._record("delete_message", access_token, message_id)
 
+    async def permanent_delete(self, access_token, message_id) -> None:
+        self._record("permanent_delete", access_token, message_id)
+
     # --- anexos grandes (upload session) ---
     async def create_draft(self, access_token, message) -> dict:
         self._record("create_draft", access_token, message)

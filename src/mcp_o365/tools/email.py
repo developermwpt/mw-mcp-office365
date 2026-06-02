@@ -403,16 +403,31 @@ async def run_email_reply_prepare(
     *,
     mapping: IdentityMapping,
     plane_b: PlaneB,
+    graph_client: GraphClient,
     store: TokenStore,
     approval: ApprovalEngine,
     message_id: str,
     comment: str,
     mode: str = "reply",
     to_recipients: list[str] | None = None,
+    scope_confirmed: bool = False,
     account_id: str | None = None,
     clock: Callable[[], datetime] = _utcnow,
 ) -> dict:
-    """US-1.4 — Prepara resposta/resposta-a-todos/reencaminho (mantém a thread)."""
+    """US-1.4 — Prepara resposta/resposta-a-todos/reencaminho (mantém a thread).
+
+    Quando `mode="reply"` e o email original tem vários destinatários (responder-a-todos
+    alcançaria mais pessoas), devolve `needs_clarification` SEM criar token — para o assistente
+    perguntar ao utilizador se quer responder só ao remetente ou a todos. `scope_confirmed=True`
+    salta essa pergunta (o utilizador já escolheu "só ao remetente")."""
+    if mode not in ("reply", "reply_all", "forward"):
+        return {"status": "error", "message": f"Modo inválido: {mode}."}
+    if mode == "forward" and not to_recipients:
+        return {
+            "status": "error",
+            "message": "Reencaminhar exige destinatários (to_recipients).",
+        }
+
     try:
         account, _ = await resolve_access_token(
             subject, mapping=mapping, plane_b=plane_b, store=store,
@@ -421,13 +436,41 @@ async def run_email_reply_prepare(
     except ReauthRequired as exc:
         return reauth_response(str(exc))
 
-    if mode not in ("reply", "reply_all", "forward"):
-        return {"status": "error", "message": f"Modo inválido: {mode}."}
-    if mode == "forward" and not to_recipients:
-        return {
-            "status": "error",
-            "message": "Reencaminhar exige destinatários (to_recipients).",
-        }
+    # Desambiguação reply vs reply_all: se o email tem vários destinatários e o utilizador
+    # apenas pediu "responder", pergunta o âmbito antes de preparar (não cria token).
+    if mode == "reply" and not scope_confirmed:
+        try:
+            _, original = await call_graph(
+                subject, mapping=mapping, plane_b=plane_b, store=store,
+                op=lambda token: graph_client.get_message(token, message_id),
+                account_id=account_id, clock=clock,
+            )
+        except ReauthRequired as exc:
+            return reauth_response(str(exc))
+        n_recipients = (
+            len(original.get("toRecipients") or [])
+            + len(original.get("ccRecipients") or [])
+        )
+        if n_recipients > 1:
+            return {
+                "status": "needs_clarification",
+                "question": (
+                    "Este email tem vários destinatários. Quer responder apenas a quem "
+                    "enviou, ou a todos os destinatários?"
+                ),
+                "recipients_in_thread": n_recipients,
+                "options": [
+                    {
+                        "label": "Apenas ao remetente",
+                        "action": "repita email_reply_prepare com mode='reply' e "
+                                  "scope_confirmed=true",
+                    },
+                    {
+                        "label": "A todos",
+                        "action": "repita email_reply_prepare com mode='reply_all'",
+                    },
+                ],
+            }
 
     labels = {"reply": "Responder", "reply_all": "Responder a todos", "forward": "Reencaminhar"}
     summary = f"{labels[mode]} à mensagem {message_id}."
@@ -664,21 +707,39 @@ async def run_email_delete_confirm(
         }
 
     async def executor(operation: str, payload: dict) -> dict:
-        account, _ = await call_graph(
+        is_permanent = bool(payload.get("permanent"))
+
+        async def do(token: str):
+            if is_permanent:
+                # Hard delete real: vai para a pasta `purges`, irrecuperável.
+                return await graph_client.permanent_delete(token, payload["message_id"])
+            # Soft delete previsível: mover explicitamente para Itens Eliminados (visível e
+            # recuperável). Devolve o novo recurso (o id muda com o move).
+            return await graph_client.move_message(
+                token, payload["message_id"], destination_id="deleteditems"
+            )
+
+        account, moved = await call_graph(
             subject, mapping=mapping, plane_b=plane_b, store=store,
-            op=lambda token: graph_client.delete_message(token, payload["message_id"]),
-            account_id=account_id, clock=clock,
+            op=do, account_id=account_id, clock=clock,
         )
         log_audit(
             audit_logger, action="email.delete", subject=subject,
             account_id=account.account_id, target=payload["message_id"],
-            outcome="success", extra={"permanent": bool(payload.get("permanent"))},
+            outcome="success", extra={"permanent": is_permanent},
         )
-        return {
+        result = {
             "operation": operation,
-            "message": "Mensagem eliminada.",
-            "permanent": bool(payload.get("permanent")),
+            "message": (
+                "Mensagem eliminada permanentemente."
+                if is_permanent
+                else "Mensagem movida para Itens Eliminados."
+            ),
+            "permanent": is_permanent,
         }
+        if not is_permanent and isinstance(moved, dict) and moved.get("id"):
+            result["new_id"] = moved["id"]
+        return result
 
     return await _confirm(approval, subject=subject, token=confirmation_token,
                           executor=executor)

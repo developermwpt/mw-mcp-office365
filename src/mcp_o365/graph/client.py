@@ -224,9 +224,21 @@ class GraphClient:
         return data
 
     async def delete_message(self, access_token: str, message_id: str) -> None:
-        """`DELETE /me/messages/{id}` — soft delete (vai para Itens Eliminados)."""
+        """`DELETE /me/messages/{id}` — soft delete (vai para Itens Eliminados).
+
+        Mantido por compatibilidade; o soft delete das tools usa antes um `move` explícito
+        para `deleteditems` (comportamento previsível e visível em Itens Eliminados)."""
         await self._request(
             "DELETE", f"/me/messages/{message_id}", access_token
+        )
+
+    async def permanent_delete(self, access_token: str, message_id: str) -> None:
+        """`POST /me/messages/{id}/permanentDelete` — eliminação **permanente** (purges).
+
+        Irrecuperável pelo utilizador (vai para a pasta `purges` do dumpster). Documentado em
+        Graph v1.0; requer `Mail.ReadWrite`."""
+        await self._request(
+            "POST", f"/me/messages/{message_id}/permanentDelete", access_token
         )
 
     # --- email: anexos grandes (>3MB) via upload session ---
