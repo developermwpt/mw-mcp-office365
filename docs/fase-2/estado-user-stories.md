@@ -28,7 +28,7 @@
 | US-2.3 | Criar evento (prepare/confirm) | ✅ | ✅ | ⬜ | D6: sem `location` → link Teams; com `location` → presencial sem link — o resumo declara sempre. D3: resumo declara "Notifica N participante(s) (domínios: …)". prepare lê o fuso mas **não cria** (`create_event` a 0); confirm cria 1×; replay idempotente; auditoria `calendar.create` (só-metadados, `subject_hash`+`online`). |
 | US-2.4 | Editar/reagendar (prepare/confirm; recorrência → clarification) | ✅ | ✅ | ⬜ | D4: recorrente sem `scope` → `needs_clarification` (sem token, `update_event` a 0). `scope='occurrence'` → PATCH ao próprio id; `scope='series'` → PATCH ao `seriesMasterId`. Só campos não-`None` entram em `changes`. Idempotência; auditoria `calendar.update` (`scope`). |
 | US-2.5 | Cancelar evento (prepare/confirm) | ✅ | ✅ | ⬜ | Só o **organizador** cancela; não-organizador → `error` orientando para `decline` (R3, antes de qualquer escrita). Recorrente sem `scope` → clarification. Resumo declara N participantes notificados + "Alto impacto". Idempotência; auditoria `calendar.cancel`. |
-| US-2.6 | Responder a convite (accept/decline/tentative) | ✅ | ✅ | ⬜ | D7: prepare lê o estado atual (`responseStatus`) e **declara a transição** ("Já tinha Aceitado; vai mudar para Recusado…"); bloqueia se o subject for o **organizador** (sem token). `response` inválida → `error`. Idempotência; auditoria `calendar.respond` (`response`+`previous`). |
+| US-2.6 | Responder a convite (accept/decline/tentative) | ✅ | ✅ | ⬜ | D7: prepare lê o estado atual (`responseStatus`) e **declara a transição** ("Já tinha Aceitado; vai mudar para Recusado…"); bloqueia se o subject for o **organizador** (sem token). `response` inválida → `error`. **Recusar (decline)**: se `message_choice_confirmed=false` → `needs_clarification` a perguntar se quer enviar mensagem ao organizador e qual (sem token); repetir com `comment` (com mensagem), `comment=''` (sem mensagem, notifica) ou `notify_organizer=false` (sem notificar). Idempotência; auditoria `calendar.respond` (`response`+`previous`+`notified`). |
 
 > ¹ US-2.1 validada no tenant real em 2026-06-03 (listagem de 7 eventos com Teams e fuso de
 > Lisboa) após as correções pós-deploy abaixo. As restantes US (2.2–2.6) continuam ⬜ até
@@ -78,6 +78,15 @@ declara o impacto e a notificação.
 `response ∈ {accept, decline, tentative}` (senão `error`). O prepare lê o evento; se o
 organizador for o próprio → `error` (sem token). Lê o `responseStatus` atual e declara a
 transição PT no resumo. O confirm responde via `respond_event` e audita `previous`+`response`.
+
+**Melhoria 2026-06-03 — mensagem na recusa.** Ao **recusar**, se o utilizador ainda não
+decidiu (`message_choice_confirmed=false`), o prepare devolve `needs_clarification` a
+perguntar se quer enviar mensagem ao organizador e qual o texto — **sem emitir token nem
+responder**. As 3 opções devolvidas: recusar **com** mensagem (`comment='<texto>'`), **sem**
+mensagem mas notificando (`comment=''`), ou **sem notificar** o organizador
+(`notify_organizer=false` → `send_response=false`). `accept`/`tentative` não disparam a
+pergunta e notificam sempre. O `send_response` escolhido é guardado no payload e auditado em
+`notified`. Cobertura: `test_respond_decline_*` em `test_calendar_write_e2e.py`.
 
 ## Correções e melhorias pós-deploy (2026-06-03, validação no tenant real)
 

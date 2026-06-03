@@ -427,6 +427,41 @@ def _recurrence_clarification(question_verb: str) -> dict:
     }
 
 
+def _decline_message_clarification(event_subject: str | None) -> dict:
+    """Melhoria 2026-06-03 — ao recusar, perguntar se quer enviar mensagem (e qual) ou não."""
+    alvo = f" «{event_subject}»" if event_subject else ""
+    return {
+        "status": "needs_clarification",
+        "question": (
+            f"Vai recusar o convite{alvo}. Quer enviar uma mensagem ao organizador "
+            "nesta recusa? Se sim, qual o texto?"
+        ),
+        "options": [
+            {
+                "label": "Recusar com mensagem",
+                "action": (
+                    "repita calendar_respond_prepare com response='decline', "
+                    "message_choice_confirmed=true e comment='<o texto da mensagem>'"
+                ),
+            },
+            {
+                "label": "Recusar sem mensagem (mas notifica o organizador)",
+                "action": (
+                    "repita calendar_respond_prepare com response='decline', "
+                    "message_choice_confirmed=true e comment='' (vazio)"
+                ),
+            },
+            {
+                "label": "Recusar sem notificar o organizador",
+                "action": (
+                    "repita calendar_respond_prepare com response='decline', "
+                    "message_choice_confirmed=true e notify_organizer=false"
+                ),
+            },
+        ],
+    }
+
+
 async def run_calendar_update_prepare(
     subject: str | None,
     *,
@@ -706,11 +741,17 @@ async def run_calendar_respond_prepare(
     event_id: str,
     response: str,
     comment: str = "",
+    notify_organizer: bool = True,
+    message_choice_confirmed: bool = False,
     account_id: str | None = None,
     clock: Callable[[], datetime] = _utcnow,
 ) -> dict:
     """US-2.6 — Prepara responder a um convite (NÃO responde). D7: lê o estado atual e declara
-    a mudança; bloqueia se o subject for organizador. `response` in {accept, decline, tentative}."""
+    a mudança; bloqueia se o subject for organizador. `response` in {accept, decline, tentative}.
+
+    Melhoria 2026-06-03: ao **recusar** (`decline`), se o utilizador ainda não escolheu o que
+    fazer quanto à mensagem (`message_choice_confirmed=False`), devolve `needs_clarification`
+    perguntando se quer enviar mensagem ao organizador e qual — antes de emitir o token."""
     if not event_id:
         return {"status": "error", "message": "Indique o event_id do convite."}
     if response not in _VALID_RESPONSES:
@@ -745,19 +786,28 @@ async def run_calendar_respond_prepare(
             ),
         }
 
+    # Melhoria 2026-06-03: ao recusar, perguntar pela mensagem ANTES de emitir o token.
+    if response == "decline" and not message_choice_confirmed:
+        return _decline_message_clarification(event.get("subject"))
+
     previous = event.get("responseStatus") or "none"
     previous_pt = _RESPONSE_PT.get(previous, previous)
     graph_response = _VALID_RESPONSES[response]
     new_pt = _NEW_RESPONSE_PT[graph_response]
 
-    if previous_pt.lower() == new_pt.lower():
-        summary = (
-            f"Já está como {new_pt}; vai reconfirmar e notificar o organizador."
-        )
+    # accept/tentative notificam sempre o organizador; só o decline respeita notify_organizer.
+    send_response = notify_organizer if response == "decline" else True
+    if send_response:
+        msg_part = (
+            f"com a mensagem «{comment}»" if comment.strip() else "sem mensagem"
+        ) + ", notificando o organizador"
     else:
-        summary = (
-            f"Já tinha {previous_pt}; vai mudar para {new_pt} e notificar o organizador."
-        )
+        msg_part = "sem notificar o organizador"
+
+    if previous_pt.lower() == new_pt.lower():
+        summary = f"Já está como {new_pt}; vai reconfirmar ({msg_part})."
+    else:
+        summary = f"Já tinha {previous_pt}; vai mudar para {new_pt} ({msg_part})."
 
     prepared = approval.prepare(
         subject=subject,
@@ -767,6 +817,7 @@ async def run_calendar_respond_prepare(
             "event_id": event_id,
             "response": graph_response,
             "comment": comment,
+            "send_response": send_response,
             "previous": previous,
             "event_subject": event.get("subject"),
         },
@@ -793,7 +844,8 @@ async def run_calendar_respond_confirm(
             subject, mapping=mapping, plane_b=plane_b, store=store,
             op=lambda token: graph_client.respond_event(
                 token, payload["event_id"], response=payload["response"],
-                comment=payload.get("comment", ""), send_response=True,
+                comment=payload.get("comment", ""),
+                send_response=payload.get("send_response", True),
             ),
             account_id=account_id, clock=clock,
         )
@@ -805,6 +857,7 @@ async def run_calendar_respond_confirm(
                 "subject_hash": subject_hash(payload.get("event_subject") or ""),
                 "response": payload["response"],
                 "previous": payload.get("previous"),
+                "notified": payload.get("send_response", True),
             },
         )
         return {

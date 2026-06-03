@@ -383,7 +383,7 @@ async def test_respond_declara_transicao_e_confirma(mapping, store, config, cloc
     prepared = await cal.run_calendar_respond_prepare(
         "subj-1", mapping=mapping, plane_b=pb, graph_client=gc, store=store,
         approval=approval, event_id="evt-1", response="decline",
-        comment="não posso", clock=clock,
+        comment="não posso", message_choice_confirmed=True, clock=clock,
     )
     assert prepared["status"] == "pending_confirmation"
     assert "Aceitado" in prepared["summary"] and "Recusado" in prepared["summary"]
@@ -506,3 +506,95 @@ async def test_token_de_outro_subject_e_rejeitado(mapping, store, config, clock)
     )
     assert out["status"] == "error"
     assert gc.count("create_event") == 0
+
+
+# --- Melhoria 2026-06-03: recusar pergunta pela mensagem ---
+
+
+async def test_respond_decline_sem_escolha_pede_mensagem(mapping, store, config, clock):
+    """US-2.6 — decline sem message_choice_confirmed -> needs_clarification (sem token,
+    sem responder). Devolve as opções de mensagem."""
+    _link(mapping, clock)
+    gc = FakeGraphClient(
+        me={"userPrincipalName": "subj@example.com"},
+        event={"id": "evt-1", "subject": "Convite", "organizer": "org@example.com",
+               "responseStatus": "none"},
+    )
+    out = await cal.run_calendar_respond_prepare(
+        "subj-1", mapping=mapping, plane_b=_plane_b(config, clock), graph_client=gc,
+        store=store, approval=_approval(store, clock), event_id="evt-1",
+        response="decline", clock=clock,
+    )
+    assert out["status"] == "needs_clarification"
+    assert "mensagem" in out["question"].lower()
+    assert "confirmation_token" not in out
+    assert gc.count("respond_event") == 0
+    # Tem as 3 opções (com mensagem, sem mensagem, sem notificar).
+    assert len(out["options"]) == 3
+
+
+async def test_respond_decline_com_mensagem(mapping, store, config, clock):
+    """US-2.6 — decline confirmado com texto -> respond_event com comment e send_response=True."""
+    _link(mapping, clock)
+    gc = FakeGraphClient(
+        me={"userPrincipalName": "subj@example.com"},
+        event={"id": "evt-1", "subject": "Convite", "organizer": "org@example.com",
+               "responseStatus": "none"},
+    )
+    approval = _approval(store, clock)
+    pb = _plane_b(config, clock)
+    prepared = await cal.run_calendar_respond_prepare(
+        "subj-1", mapping=mapping, plane_b=pb, graph_client=gc, store=store,
+        approval=approval, event_id="evt-1", response="decline",
+        comment="Não consigo participar, obrigado.", message_choice_confirmed=True,
+        clock=clock,
+    )
+    assert prepared["status"] == "pending_confirmation"
+    assert "mensagem" in prepared["summary"].lower()
+    await cal.run_calendar_respond_confirm(
+        "subj-1", mapping=mapping, plane_b=pb, graph_client=gc, store=store,
+        approval=approval, confirmation_token=prepared["confirmation_token"], clock=clock,
+    )
+    call = next(c for c in gc.calls if c[0] == "respond_event")
+    assert call[2]["comment"] == "Não consigo participar, obrigado."
+    assert call[2]["send_response"] is True
+
+
+async def test_respond_decline_sem_notificar(mapping, store, config, clock):
+    """US-2.6 — decline confirmado com notify_organizer=false -> send_response=False."""
+    _link(mapping, clock)
+    gc = FakeGraphClient(
+        me={"userPrincipalName": "subj@example.com"},
+        event={"id": "evt-1", "subject": "Convite", "organizer": "org@example.com",
+               "responseStatus": "none"},
+    )
+    approval = _approval(store, clock)
+    pb = _plane_b(config, clock)
+    prepared = await cal.run_calendar_respond_prepare(
+        "subj-1", mapping=mapping, plane_b=pb, graph_client=gc, store=store,
+        approval=approval, event_id="evt-1", response="decline",
+        message_choice_confirmed=True, notify_organizer=False, clock=clock,
+    )
+    assert prepared["status"] == "pending_confirmation"
+    assert "sem notificar" in prepared["summary"].lower()
+    await cal.run_calendar_respond_confirm(
+        "subj-1", mapping=mapping, plane_b=pb, graph_client=gc, store=store,
+        approval=approval, confirmation_token=prepared["confirmation_token"], clock=clock,
+    )
+    call = next(c for c in gc.calls if c[0] == "respond_event")
+    assert call[2]["send_response"] is False
+
+
+async def test_respond_accept_nao_pergunta_mensagem(mapping, store, config, clock):
+    """US-2.6 — accept NÃO dispara a pergunta da mensagem (vai direto a pending_confirmation)."""
+    _link(mapping, clock)
+    gc = FakeGraphClient(
+        me={"userPrincipalName": "subj@example.com"},
+        event={"id": "evt-1", "organizer": "org@example.com", "responseStatus": "none"},
+    )
+    out = await cal.run_calendar_respond_prepare(
+        "subj-1", mapping=mapping, plane_b=_plane_b(config, clock), graph_client=gc,
+        store=store, approval=_approval(store, clock), event_id="evt-1",
+        response="accept", clock=clock,
+    )
+    assert out["status"] == "pending_confirmation"

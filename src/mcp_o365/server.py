@@ -446,19 +446,27 @@ def build_server(
     @mcp.tool(
         description=(
             "FASE 1/2 — Prepara responder a um convite recebido (NÃO responde). Parâmetros: "
-            "event_id, response in {accept, decline, tentative}, comment opcional. O prepare lê "
-            "o seu estado ATUAL e declara a mudança (ex.: 'já tinha aceitado; vai mudar para "
-            "Recusado e notificar o organizador'). Se VOCÊ for o organizador, devolve erro (o "
-            "organizador não responde ao próprio convite). Devolve confirmation_token."
+            "event_id, response in {accept, decline, tentative}, comment opcional, "
+            "notify_organizer (default true), message_choice_confirmed (default false). O "
+            "prepare lê o seu estado ATUAL e declara a mudança (ex.: 'já tinha aceitado; vai "
+            "mudar para Recusado'). Se VOCÊ for o organizador, devolve erro. "
+            "RECUSAR (decline): se message_choice_confirmed=false, devolve "
+            "needs_clarification a perguntar se quer enviar MENSAGEM ao organizador e qual o "
+            "texto — NÃO emite token nem responde. Apresente as opções ao utilizador e repita "
+            "com message_choice_confirmed=true e: comment='<texto>' (recusar com mensagem), "
+            "comment='' (sem mensagem mas notifica), ou notify_organizer=false (sem notificar). "
+            "Para accept/tentative não há esta pergunta. Devolve confirmation_token."
         )
     )
     async def calendar_respond_prepare(
-        event_id: str, response: str, comment: str = ""
+        event_id: str, response: str, comment: str = "",
+        notify_organizer: bool = True, message_choice_confirmed: bool = False,
     ) -> dict:
         return await calendar_tools.run_calendar_respond_prepare(
             _subject(), mapping=mapping, plane_b=plane_b, graph_client=graph_client,
             store=store, approval=approval, event_id=event_id, response=response,
-            comment=comment,
+            comment=comment, notify_organizer=notify_organizer,
+            message_choice_confirmed=message_choice_confirmed,
         )
 
     @mcp.tool(
