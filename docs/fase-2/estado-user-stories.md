@@ -27,7 +27,7 @@
 | US-2.2 | Verificar disponibilidade (`getSchedule`) | ✅ | ✅ | ⬜ | `POST /me/calendar/getSchedule` (D2); o **próprio é sempre incluído** (via `/me`), dedup case-insensitive dos emails. `attendees` pode ser vazio (só o próprio). Horas no fuso do mailbox. |
 | US-2.3 | Criar evento (prepare/confirm) | ✅ | ✅ | ⬜ | D6: sem `location` → link Teams; com `location` → presencial sem link — o resumo declara sempre. D3: resumo declara "Notifica N participante(s) (domínios: …)". prepare lê o fuso mas **não cria** (`create_event` a 0); confirm cria 1×; replay idempotente; auditoria `calendar.create` (só-metadados, `subject_hash`+`online`). |
 | US-2.4 | Editar/reagendar (prepare/confirm; recorrência → clarification) | ✅ | ✅ | ⬜ | D4: recorrente sem `scope` → `needs_clarification` (sem token, `update_event` a 0). `scope='occurrence'` → PATCH ao próprio id; `scope='series'` → PATCH ao `seriesMasterId`. Só campos não-`None` entram em `changes`. Idempotência; auditoria `calendar.update` (`scope`). |
-| US-2.5 | Cancelar evento (prepare/confirm) | ✅ | ✅ | ⬜ | Só o **organizador** cancela; não-organizador → `error` orientando para `decline` (R3, antes de qualquer escrita). Recorrente sem `scope` → clarification. Resumo declara N participantes notificados + "Alto impacto". Idempotência; auditoria `calendar.cancel`. |
+| US-2.5 | Cancelar evento (prepare/confirm) | ✅ | ✅ | ⬜ | Só o **organizador** cancela; não-organizador → `error` orientando para `decline` (R3, antes de qualquer escrita). Recorrente sem `scope` → clarification. **Mensagem de cancelamento (melhoria 2026-06-03):** se `message_choice_confirmed=false` → `needs_clarification` (mensagem própria / **sugestão a aceitar antes** / nenhuma); sem token, sem cancel. Resumo declara N participantes notificados + "Alto impacto". Idempotência; auditoria `calendar.cancel`. |
 | US-2.6 | Responder a convite (accept/decline/tentative) | ✅ | ✅ | ⬜ | D7: prepare lê o estado atual (`responseStatus`) e **declara a transição** ("Já tinha Aceitado; vai mudar para Recusado…"); bloqueia se o subject for o **organizador** (sem token). `response` inválida → `error`. **Recusar (decline)**: se `message_choice_confirmed=false` → `needs_clarification` a perguntar se quer enviar mensagem ao organizador e qual (sem token); repetir com `comment` (com mensagem), `comment=''` (sem mensagem, notifica) ou `notify_organizer=false` (sem notificar). Idempotência; auditoria `calendar.respond` (`response`+`previous`+`notified`). |
 
 > ¹ US-2.1 validada no tenant real em 2026-06-03 (listagem de 7 eventos com Teams e fuso de
@@ -72,6 +72,14 @@ fornecidos entram em `changes`.
 O prepare lê o evento e o email do próprio: se o organizador ≠ próprio → `error` orientando
 para `decline` (R3), antes de qualquer escrita. Recorrência tratada como no update. O resumo
 declara o impacto e a notificação.
+
+**Melhoria 2026-06-03 — mensagem de cancelamento.** Como cancelar **notifica sempre** os
+participantes, se o utilizador ainda não decidiu (`message_choice_confirmed=false`) o prepare
+devolve `needs_clarification` com 3 opções: mensagem **própria** (`comment='<texto>'`), pedir
+uma **sugestão** (o assistente propõe um texto e o utilizador tem de **aceitar/ajustar antes**
+— nunca se cancela com sugestão não aprovada), ou **sem mensagem** (`comment=''`). Só após a
+escolha (com `message_choice_confirmed=true`) é emitido o token. Cobertura:
+`test_cancel_sem_escolha_pede_mensagem` e `test_cancel_com_mensagem_confirmada`.
 
 ### US-2.6 — `calendar_respond` (prepare/confirm)
 

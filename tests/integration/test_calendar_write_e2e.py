@@ -286,7 +286,7 @@ async def test_cancel_organizador_prepare_confirm_audita(mapping, store, config,
     pb = _plane_b(config, clock)
     prepared = await cal.run_calendar_cancel_prepare(
         "subj-1", mapping=mapping, plane_b=pb, graph_client=gc, store=store,
-        approval=approval, event_id="evt-1", clock=clock,
+        approval=approval, event_id="evt-1", message_choice_confirmed=True, clock=clock,
     )
     assert prepared["status"] == "pending_confirmation"
     assert "Notifica 2 participante(s)" in prepared["summary"]
@@ -352,7 +352,7 @@ async def test_cancel_confirm_idempotente(mapping, store, config, clock):
     pb = _plane_b(config, clock)
     prepared = await cal.run_calendar_cancel_prepare(
         "subj-1", mapping=mapping, plane_b=pb, graph_client=gc, store=store,
-        approval=approval, event_id="evt-1", clock=clock,
+        approval=approval, event_id="evt-1", message_choice_confirmed=True, clock=clock,
     )
     token = prepared["confirmation_token"]
     await cal.run_calendar_cancel_confirm(
@@ -365,6 +365,54 @@ async def test_cancel_confirm_idempotente(mapping, store, config, clock):
     )
     assert second["idempotent_replay"] is True
     assert gc.count("cancel_event") == 1
+
+
+async def test_cancel_sem_escolha_pede_mensagem(mapping, store, config, clock):
+    """US-2.5 (melhoria 2026-06-03) — organizador a cancelar sem message_choice_confirmed
+    -> needs_clarification (mensagem própria/sugerida/nenhuma); sem token, sem cancel."""
+    _link(mapping, clock)
+    gc = FakeGraphClient(
+        mailbox_timezone="GMT Standard Time",
+        me={"userPrincipalName": "subj@example.com"},
+        event={"id": "evt-1", "subject": "Reunião Moomenti", "isRecurring": False,
+               "organizer": "subj@example.com", "attendees": [{"email": "a@x.com"}]},
+    )
+    out = await cal.run_calendar_cancel_prepare(
+        "subj-1", mapping=mapping, plane_b=_plane_b(config, clock), graph_client=gc,
+        store=store, approval=_approval(store, clock), event_id="evt-1", clock=clock,
+    )
+    assert out["status"] == "needs_clarification"
+    assert "mensagem" in out["question"].lower()
+    assert "confirmation_token" not in out
+    assert gc.count("cancel_event") == 0
+    # 3 opções: minha / sugere / sem mensagem.
+    assert len(out["options"]) == 3
+    assert any("uge" in o["label"] or "ugest" in o["action"] for o in out["options"])
+
+
+async def test_cancel_com_mensagem_confirmada(mapping, store, config, clock):
+    """US-2.5 — com message_choice_confirmed + comment -> token; confirm cancela com o texto."""
+    _link(mapping, clock)
+    gc = FakeGraphClient(
+        mailbox_timezone="GMT Standard Time",
+        me={"userPrincipalName": "subj@example.com"},
+        event={"id": "evt-1", "subject": "Reunião Moomenti", "isRecurring": False,
+               "organizer": "subj@example.com", "attendees": [{"email": "a@x.com"}]},
+    )
+    approval = _approval(store, clock)
+    pb = _plane_b(config, clock)
+    prepared = await cal.run_calendar_cancel_prepare(
+        "subj-1", mapping=mapping, plane_b=pb, graph_client=gc, store=store,
+        approval=approval, event_id="evt-1", comment="Vamos reagendar em breve.",
+        message_choice_confirmed=True, clock=clock,
+    )
+    assert prepared["status"] == "pending_confirmation"
+    await cal.run_calendar_cancel_confirm(
+        "subj-1", mapping=mapping, plane_b=pb, graph_client=gc, store=store,
+        approval=approval, confirmation_token=prepared["confirmation_token"], clock=clock,
+    )
+    call = next(c for c in gc.calls if c[0] == "cancel_event")
+    assert call[2]["comment"] == "Vamos reagendar em breve."
 
 
 # ============================ US-2.6 — RESPONDER ============================

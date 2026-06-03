@@ -415,20 +415,27 @@ def build_server(
 
     @mcp.tool(
         description=(
-            "FASE 1/2 — Prepara cancelar um evento (NÃO cancela). Parâmetro: event_id (+ "
-            "comment opcional). Se for RECORRENTE, devolve needs_clarification (esta ocorrência "
-            "vs série). Se NÃO for o organizador, devolve erro orientando para calendar_respond "
-            "com decline. O resumo declara quantos participantes serão notificados do "
-            "cancelamento. Alto impacto."
+            "FASE 1/2 — Prepara cancelar um evento (NÃO cancela). Parâmetros: event_id, "
+            "comment opcional, scope, message_choice_confirmed (default false). Se for "
+            "RECORRENTE, devolve needs_clarification (esta ocorrência vs série). Se NÃO for o "
+            "organizador, devolve erro orientando para calendar_respond com decline. "
+            "MENSAGEM DE CANCELAMENTO: como o cancelamento notifica os participantes, se "
+            "message_choice_confirmed=false devolve needs_clarification a perguntar se quer "
+            "mensagem própria, uma SUGESTÃO (que deve propor e o utilizador ACEITAR antes), ou "
+            "nenhuma — NÃO emite token. Nunca cancele com uma sugestão não aprovada pelo "
+            "utilizador. Repita com message_choice_confirmed=true e comment='<texto>' ou "
+            "comment='' (sem mensagem). O resumo declara quantos participantes serão "
+            "notificados. Alto impacto."
         )
     )
     async def calendar_cancel_prepare(
-        event_id: str, comment: str = "", scope: str | None = None
+        event_id: str, comment: str = "", scope: str | None = None,
+        message_choice_confirmed: bool = False,
     ) -> dict:
         return await calendar_tools.run_calendar_cancel_prepare(
             _subject(), mapping=mapping, plane_b=plane_b, graph_client=graph_client,
             store=store, approval=approval, event_id=event_id, comment=comment,
-            scope=scope,
+            scope=scope, message_choice_confirmed=message_choice_confirmed,
         )
 
     @mcp.tool(

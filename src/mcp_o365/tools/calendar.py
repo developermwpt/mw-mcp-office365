@@ -427,6 +427,44 @@ def _recurrence_clarification(question_verb: str) -> dict:
     }
 
 
+def _cancel_message_clarification(event_subject: str | None) -> dict:
+    """Melhoria 2026-06-03 — ao cancelar (organizador), perguntar pela mensagem: própria,
+    sugerida (a aceitar antes), ou nenhuma. O cancelamento notifica sempre os participantes."""
+    alvo = f" «{event_subject}»" if event_subject else ""
+    return {
+        "status": "needs_clarification",
+        "question": (
+            f"Vai cancelar a reunião{alvo} e os participantes serão notificados. Quer uma "
+            "mensagem própria de cancelamento, que eu sugira uma, ou cancelar sem mensagem?"
+        ),
+        "options": [
+            {
+                "label": "Mensagem minha",
+                "action": (
+                    "repita calendar_cancel_prepare com message_choice_confirmed=true e "
+                    "comment='<a mensagem do utilizador>'"
+                ),
+            },
+            {
+                "label": "Sugere uma mensagem",
+                "action": (
+                    "PROPONHA ao utilizador um texto de cancelamento e AGUARDE que ele aceite "
+                    "ou ajuste; só APÓS a aceitação repita calendar_cancel_prepare com "
+                    "message_choice_confirmed=true e comment='<o texto aceite>'. Não cancele "
+                    "com uma sugestão não aprovada."
+                ),
+            },
+            {
+                "label": "Cancelar sem mensagem",
+                "action": (
+                    "repita calendar_cancel_prepare com message_choice_confirmed=true e "
+                    "comment='' (vazio)"
+                ),
+            },
+        ],
+    }
+
+
 def _decline_message_clarification(event_subject: str | None) -> dict:
     """Melhoria 2026-06-03 — ao recusar, perguntar se quer enviar mensagem (e qual) ou não."""
     alvo = f" «{event_subject}»" if event_subject else ""
@@ -619,11 +657,17 @@ async def run_calendar_cancel_prepare(
     event_id: str,
     comment: str = "",
     scope: str | None = None,
+    message_choice_confirmed: bool = False,
     account_id: str | None = None,
     clock: Callable[[], datetime] = _utcnow,
 ) -> dict:
     """US-2.5 — Prepara cancelar (NÃO cancela). Só o organizador pode cancelar (senão, orienta
-    para decline). Recorrente sem `scope` -> clarification. D3: resumo declara notificação."""
+    para decline). Recorrente sem `scope` -> clarification. D3: resumo declara notificação.
+
+    Melhoria 2026-06-03: como o cancelamento NOTIFICA os participantes, se o utilizador ainda
+    não escolheu o que fazer quanto à mensagem (`message_choice_confirmed=False`), devolve
+    `needs_clarification` perguntando se quer uma mensagem própria, uma sugestão (a aceitar
+    antes), ou nenhuma — antes de emitir o token."""
     if not event_id:
         return {"status": "error", "message": "Indique o event_id a cancelar."}
 
@@ -660,6 +704,10 @@ async def run_calendar_cancel_prepare(
 
     if event.get("isRecurring") and scope is None:
         return _recurrence_clarification("Cancelar")
+
+    # Melhoria 2026-06-03: perguntar pela mensagem de cancelamento ANTES de emitir o token.
+    if not message_choice_confirmed:
+        return _cancel_message_clarification(event.get("subject"))
 
     target_event_id = event_id
     if scope == "series" and event.get("seriesMasterId"):
