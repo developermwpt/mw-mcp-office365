@@ -92,7 +92,7 @@ O token de confirmação serve também de **idempotency key** (neutraliza retrie
 
 Idênticos à [v1.0 §4](analise-funcional-v1.0.md), com a alteração transversal: cada **[AC-WRITE]** passa a significar **par `prepare`/`confirm` server-side** (não aprovação narrativa). Resumo:
 
-- **Email:** pesquisar, ler, enviar, responder/responder-a-todos/reencaminhar, anexos (receber/enviar), arquivar/mover, apagar.
+- **Email:** pesquisar, ler, enviar, responder/responder-a-todos/reencaminhar, anexos (receber/enviar), arquivar/mover, apagar. *Pesquisa por período com paginação consciente:* período ≤ 24h devolve **todos** os emails automaticamente; período > 24h com mais resultados do que cabe numa página **pergunta** ao utilizador (todos vs primeiros N) antes de paginar — ver [estado-user-stories §US-1.1](fase-1/estado-user-stories.md).
 - **Calendário:** consultar eventos, verificar disponibilidade, criar, editar, cancelar, responder a convites.
 - **Teams (chats 1:1 e grupo):** listar chats, ler mensagens, enviar/responder.
 - **Ficheiros (OneDrive/SharePoint):** pesquisar, listar, ler, upload, mover/renomear/eliminar.

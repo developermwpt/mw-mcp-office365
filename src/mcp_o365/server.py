@@ -93,7 +93,12 @@ def build_server(
     @mcp.tool(
         description=(
             "Pesquisa emails (read-only). Filtros opcionais: from_, subject_contains, "
-            "date_from/date_to (ISO 8601), query (pesquisa full-text), folder, top, skip."
+            "date_from/date_to (ISO 8601), query (pesquisa full-text), folder, top (página, "
+            "default 50), skip, fetch_all. Pesquisa POR PERÍODO (date_from/date_to): se houver "
+            "mais emails do que `top` e o período for > 24h, devolve status='needs_clarification' "
+            "— PERGUNTE ao utilizador se quer todos (repita com fetch_all=true e os mesmos "
+            "filtros) ou só os primeiros `top`. Se o período for <= 24h, devolve "
+            "automaticamente todos (não pergunte)."
         )
     )
     async def email_search(
@@ -103,14 +108,15 @@ def build_server(
         date_to: str | None = None,
         query: str | None = None,
         folder: str | None = None,
-        top: int = 25,
+        top: int = 50,
         skip: int | None = None,
+        fetch_all: bool = False,
     ) -> dict:
         return await email_tools.run_email_search(
             _subject(), mapping=mapping, plane_b=plane_b, graph_client=graph_client,
             store=store, from_=from_, subject_contains=subject_contains,
             date_from=date_from, date_to=date_to, query=query, folder=folder,
-            top=top, skip=skip,
+            top=top, skip=skip, fetch_all=fetch_all,
         )
 
     @mcp.tool(

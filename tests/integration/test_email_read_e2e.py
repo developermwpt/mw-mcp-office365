@@ -150,3 +150,73 @@ async def test_search_sem_conta_pede_reauth(mapping, store, config, clock):
     )
     assert out["status"] == "reauth_required"
     assert gc.calls == []
+
+
+# --- Pesquisa por período: paginar tudo vs perguntar (melhoria 2026-06-03) ---
+
+
+async def test_periodo_longo_com_mais_de_uma_pagina_pede_clarificacao(
+    mapping, store, config, clock
+):
+    """US-1.1 — período > 24h com mais resultados que `top` -> needs_clarification.
+
+    NÃO pagina (não chama list_messages_next) e devolve já a 1ª página."""
+    _link(mapping, clock)
+    gc = FakeGraphClient(
+        messages={"messages": [{"id": "m1"}], "next": "https://next-page"},
+        next_pages=[{"messages": [{"id": "m2"}], "next": None}],
+    )
+    out = await run_email_search(
+        "subj-1", mapping=mapping, plane_b=_plane_b(config, clock),
+        graph_client=gc, store=store,
+        date_from="2026-05-01T00:00:00Z", date_to="2026-06-01T00:00:00Z",
+        top=1, clock=clock,
+    )
+    assert out["status"] == "needs_clarification"
+    assert out["has_more"] is True
+    assert out["count"] == 1  # devolve a 1ª página para o assistente poder mostrar
+    assert gc.count("list_messages") == 1
+    assert gc.count("list_messages_next") == 0  # não paginou
+
+
+async def test_periodo_longo_com_fetch_all_pagina_tudo(mapping, store, config, clock):
+    """US-1.1 — período > 24h com fetch_all=True -> segue o nextLink até esgotar."""
+    _link(mapping, clock)
+    gc = FakeGraphClient(
+        messages={"messages": [{"id": "m1"}], "next": "https://p2"},
+        next_pages=[
+            {"messages": [{"id": "m2"}], "next": "https://p3"},
+            {"messages": [{"id": "m3"}], "next": None},
+        ],
+    )
+    out = await run_email_search(
+        "subj-1", mapping=mapping, plane_b=_plane_b(config, clock),
+        graph_client=gc, store=store,
+        date_from="2026-05-01T00:00:00Z", date_to="2026-06-01T00:00:00Z",
+        top=1, fetch_all=True, clock=clock,
+    )
+    assert out["status"] == "ok"
+    assert out["count"] == 3
+    assert out["has_more"] is False
+    assert out["fetched_all"] is True
+    assert [m["id"] for m in out["messages"]] == ["m1", "m2", "m3"]
+    assert gc.count("list_messages_next") == 2
+
+
+async def test_periodo_curto_pagina_tudo_sem_perguntar(mapping, store, config, clock):
+    """US-1.1 — período <= 24h devolve sempre todos, sem needs_clarification."""
+    _link(mapping, clock)
+    gc = FakeGraphClient(
+        messages={"messages": [{"id": "m1"}], "next": "https://p2"},
+        next_pages=[{"messages": [{"id": "m2"}], "next": None}],
+    )
+    # date_from sem date_to: o fim assume-se = agora (FIXED_NOW 12:00) -> 12h de período.
+    out = await run_email_search(
+        "subj-1", mapping=mapping, plane_b=_plane_b(config, clock),
+        graph_client=gc, store=store,
+        date_from="2026-06-01T00:00:00Z", top=1, clock=clock,
+    )
+    assert out["status"] == "ok"
+    assert out["count"] == 2
+    assert out["auto_fetched_all"] is True
+    assert gc.count("list_messages_next") == 1

@@ -20,7 +20,7 @@ from __future__ import annotations
 import base64
 import logging
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from ..approval.engine import ApprovalEngine
 from ..approval.errors import ConfirmationExpired, ConfirmationNotFound
@@ -57,6 +57,39 @@ _WELL_KNOWN_FOLDERS = {
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+# --- Pesquisa por período (US-1.1) ---
+# Amplitude (em horas) até à qual se devolvem SEMPRE todos os emails do período sem
+# perguntar. Acima disto, com mais resultados do que cabe numa página, pergunta-se primeiro.
+_PERIOD_FETCH_ALL_HOURS = 24
+# Teto de segurança ao paginar "todos" — evita puxar dezenas de milhar de emails.
+_MAX_FETCH_ALL = 1000
+
+
+def _parse_iso(value: str | None) -> datetime | None:
+    """Parse de um instante ISO 8601 (aceita sufixo 'Z' e datas só-dia). None se inválido."""
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def _period_within_a_day(
+    date_from: str | None, date_to: str | None, clock: Callable[[], datetime]
+) -> bool:
+    """True se o período pedido estiver bem definido e for <= 24h.
+
+    Exige limite inferior (`date_from`); o superior, se ausente, assume-se o instante atual.
+    Datas inválidas ou ordem invertida (fim antes do início) -> False (trata como longo)."""
+    start = _parse_iso(date_from)
+    if start is None:
+        return False
+    end = _parse_iso(date_to) or clock()
+    return timedelta(0) <= (end - start) <= timedelta(hours=_PERIOD_FETCH_ALL_HOURS)
 
 
 # Metadados de mensagem permitidos no payload de aprovação (para a aprendizagem). NUNCA o
@@ -143,12 +176,21 @@ async def run_email_search(
     date_to: str | None = None,
     query: str | None = None,
     folder: str | None = None,
-    top: int = 25,
+    top: int = 50,
     skip: int | None = None,
+    fetch_all: bool = False,
     account_id: str | None = None,
     clock: Callable[[], datetime] = _utcnow,
 ) -> dict:
-    """US-1.1 — Pesquisa mensagens. Constrói `$search`/`$filter` a partir dos critérios."""
+    """US-1.1 — Pesquisa mensagens. Constrói `$search`/`$filter` a partir dos critérios.
+
+    **Pesquisa por período** (date_from/date_to): quando há mais resultados do que cabe numa
+    página (`top`), o comportamento depende da amplitude do período pedido:
+    - **<= 24h**: devolve TODOS os emails do período (pagina automaticamente, com o teto de
+      segurança `_MAX_FETCH_ALL`), sem perguntar.
+    - **> 24h**: devolve `status='needs_clarification'` (sem paginar) para o assistente
+      perguntar se quer todos (repetir com `fetch_all=True`) ou só os primeiros `top`.
+    Sem período pedido, mantém-se o comportamento simples: primeira página + `has_more`."""
     filters: list[str] = []
     if from_:
         filters.append(f"from/emailAddress/address eq '{from_}'")
@@ -159,31 +201,95 @@ async def run_email_search(
     if date_to:
         filters.append(f"receivedDateTime le {date_to}")
     filter_query = " and ".join(filters) if filters else None
+    orderby = None if query else "receivedDateTime desc"
 
-    async def op(token: str) -> dict:
+    async def fetch_first(token: str) -> dict:
         return await graph_client.list_messages(
-            token,
-            search=query,
-            filter_query=filter_query,
-            folder=folder,
-            top=top,
-            skip=skip,
-            orderby=None if query else "receivedDateTime desc",
+            token, search=query, filter_query=filter_query, folder=folder,
+            top=top, skip=skip, orderby=orderby,
         )
 
     try:
-        _, result = await call_graph(
+        _, first = await call_graph(
             subject, mapping=mapping, plane_b=plane_b, store=store,
-            op=op, account_id=account_id, clock=clock,
+            op=fetch_first, account_id=account_id, clock=clock,
         )
     except ReauthRequired as exc:
         return reauth_response(str(exc))
-    return {
+
+    has_more = first["next"] is not None
+    has_period = bool(date_from or date_to)
+
+    # Sem período pedido, ou tudo coube na 1ª página: comportamento simples de sempre.
+    if not has_period or not has_more:
+        return {
+            "status": "ok",
+            "messages": first["messages"],
+            "count": len(first["messages"]),
+            "has_more": has_more,
+        }
+
+    short_period = _period_within_a_day(date_from, date_to, clock)
+
+    # Período > 24h com mais resultados: perguntar antes de puxar tudo (a menos que já
+    # tenham pedido explicitamente fetch_all). NÃO assumir — devolve já a 1ª página.
+    if not short_period and not fetch_all:
+        return {
+            "status": "needs_clarification",
+            "question": (
+                f"Encontrei mais de {top} emails neste período. Quer ver todos, "
+                f"ou apenas os primeiros {top}?"
+            ),
+            "messages": first["messages"],
+            "count": len(first["messages"]),
+            "has_more": True,
+            "options": [
+                {
+                    "label": f"Apenas os primeiros {top}",
+                    "action": "use os resultados já devolvidos; não repita a pesquisa",
+                },
+                {
+                    "label": "Todos",
+                    "action": "repita email_search com fetch_all=true e os mesmos filtros",
+                },
+            ],
+        }
+
+    # Período <= 24h (devolve sempre todos) OU fetch_all pedido: pagina até esgotar (teto).
+    all_messages = list(first["messages"])
+    next_link = first["next"]
+    truncated = False
+    try:
+        while next_link:
+            if len(all_messages) >= _MAX_FETCH_ALL:
+                truncated = True
+                break
+
+            async def fetch_more(token: str, _link: str = next_link) -> dict:
+                return await graph_client.list_messages_next(
+                    token, _link, consistency=bool(query)
+                )
+
+            _, page = await call_graph(
+                subject, mapping=mapping, plane_b=plane_b, store=store,
+                op=fetch_more, account_id=account_id, clock=clock,
+            )
+            all_messages.extend(page["messages"])
+            next_link = page["next"]
+    except ReauthRequired as exc:
+        return reauth_response(str(exc))
+
+    result = {
         "status": "ok",
-        "messages": result["messages"],
-        "count": len(result["messages"]),
-        "has_more": result["next"] is not None,
+        "messages": all_messages,
+        "count": len(all_messages),
+        "has_more": bool(next_link),
+        "fetched_all": not truncated,
+        "auto_fetched_all": short_period,
     }
+    if truncated:
+        result["truncated_at"] = _MAX_FETCH_ALL
+    return result
 
 
 async def run_email_read(

@@ -30,10 +30,14 @@ class FakeGraphClient:
         draft: dict | None = None,
         people: list[dict] | None = None,
         contacts: list[dict] | None = None,
+        next_pages: list[dict] | None = None,
         auth_fail: dict[str, int] | None = None,
     ) -> None:
         self.calls: list[tuple[str, tuple, dict]] = []
         self._messages = messages or {"messages": [], "next": None}
+        # Páginas seguintes devolvidas por `list_messages_next` (consumidas por ordem).
+        self._next_pages = list(next_pages or [])
+        self._next_idx = 0
         self._message = message or {}
         self._attachments = attachments or []
         self._attachment = attachment or {}
@@ -59,6 +63,14 @@ class FakeGraphClient:
     async def list_messages(self, access_token, **kwargs) -> dict:
         self._record("list_messages", access_token, **kwargs)
         return self._messages
+
+    async def list_messages_next(self, access_token, next_link, *, consistency=False) -> dict:
+        self._record("list_messages_next", access_token, next_link, consistency=consistency)
+        if self._next_idx < len(self._next_pages):
+            page = self._next_pages[self._next_idx]
+            self._next_idx += 1
+            return {"messages": page.get("messages", []), "next": page.get("next")}
+        return {"messages": [], "next": None}
 
     async def get_message(self, access_token, message_id, **kwargs) -> dict:
         self._record("get_message", access_token, message_id, **kwargs)

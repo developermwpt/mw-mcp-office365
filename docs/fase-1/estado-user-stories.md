@@ -21,7 +21,7 @@
 
 | US | Descrição curta | Implementado | Testado (auto) | Validação manual | Notas |
 |----|-----------------|:---:|:---:|:---:|-------|
-| US-1.1 | Pesquisar emails (`$search`/`$filter`, paginação `has_more`) | ✅ | ✅ | ✅ | `$search` envia `ConsistencyLevel: eventual`. |
+| US-1.1 | Pesquisar emails (`$search`/`$filter`, paginação `has_more`) | ✅ | ✅ | ✅ | `$search` envia `ConsistencyLevel: eventual`. **Pesquisa por período** (ver secção abaixo): período > 24h com mais de `top` resultados → `needs_clarification` (todos vs primeiros `top`); período ≤ 24h → devolve todos automaticamente. |
 | US-1.2 | Ler email (corpo sanitizado, `content_is_untrusted`) | ✅ | ✅ | ✅ | HTML sanitizado (anti prompt injection); flag de não-confiança sempre presente. |
 | US-1.3 | Enviar email (prepare/confirm) | ✅ | ✅ | ✅ | Two-phase approval + auditoria `email.send`. |
 | US-1.4 | Responder / responder-a-todos / reencaminhar | ✅ | ✅ | ✅ | Mantém a thread; forward exige `to_recipients`; auditoria `email.reply`/`email.forward`. Em `reply` com vários destinatários, `prepare` devolve `needs_clarification` (pergunta remetente vs todos) — `scope_confirmed`/`reply_all` saltam. |
@@ -29,6 +29,32 @@
 | US-1.6 | Anexos grandes (>3MB) no envio | ✅ | ✅ | ⬜ | Upload session completo (rascunho + chunks + envio). **Coberto por testes auto**, mas o envio de um anexo real >3MB ainda **não foi exercido no tenant real** (anexos ≤3MB inline validados via envio normal). |
 | US-1.7 | Mover email entre pastas | ✅ | ✅ | ✅ | Resolve nome de pasta → id (bem-conhecidas + `list_folders`); auditoria `email.move`. |
 | US-1.8 | Eliminar email (soft + permanente reforçada) | ✅ | ✅ | ✅ | **Soft** = mover para Itens Eliminados (visível/recuperável); **permanente** = ação `permanentDelete` real (purges). Permanente recusada sem `confirm_permanent=True` (antes de consumir o token); auditoria `email.delete`. Soft+permanente validados no real após correção. |
+
+## US-1.1 — pesquisa por período: paginação consciente (melhoria 2026-06-03)
+
+**Problema:** ao pedir emails de um período, o servidor devolvia apenas a primeira página
+(`top`) e sinalizava `has_more`, mas **nunca trazia o resto** — o utilizador podia ficar com
+a falsa ideia de que aqueles eram todos os emails do período.
+
+**Comportamento (apenas quando é pedido um período — `date_from` e/ou `date_to`):**
+
+| Período pedido | Há mais do que `top`? | Resposta |
+|----------------|:---:|----------|
+| **≤ 24h** (um dia inteiro ou menos) | — | `status=ok` com **todos** os emails do período (pagina automaticamente seguindo o `@odata.nextLink`). Não pergunta. `auto_fetched_all=true`. |
+| **> 24h** | Não | `status=ok` com a página única. |
+| **> 24h** | Sim | `status=needs_clarification`: o assistente **pergunta** se quer todos ou só os primeiros `top`. Devolve já a 1ª página em `messages`. Para obter todos: repetir `email_search` com `fetch_all=true` e os mesmos filtros. |
+
+**Regras de cálculo do período:** exige limite inferior (`date_from`); se `date_to` faltar,
+assume-se o instante atual. Datas inválidas ou ordem invertida tratam-se como período longo
+(pergunta). Sem qualquer período pedido (ex.: só `subject_contains`), mantém-se o
+comportamento simples de sempre — 1ª página + `has_more`, sem perguntar.
+
+**Salvaguardas:** a paginação "todos" tem um **teto de segurança** de `_MAX_FETCH_ALL` (1000)
+para não puxar dezenas de milhar de emails; se atingido, devolve `fetched_all=false`,
+`has_more=true` e `truncated_at=1000`. A página por defeito (`top`) passou de 25 → **50**. A
+paginação segue o `@odata.nextLink` (funciona com `$filter` e com `$search`, repetindo o
+`ConsistencyLevel: eventual` quando aplicável). Cobertura: `test_email_read_e2e.py`
+(`test_periodo_longo_*`, `test_periodo_curto_pagina_tudo_sem_perguntar`).
 
 ## US-1.6 — anexos > 3 MB (completo)
 

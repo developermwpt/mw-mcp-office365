@@ -138,6 +138,20 @@ class GraphClient:
         messages = [self._map_message_summary(m) for m in data.get("value", [])]
         return {"messages": messages, "next": data.get("@odata.nextLink")}
 
+    async def list_messages_next(
+        self, access_token: str, next_link: str, *, consistency: bool = False
+    ) -> dict:
+        """Segue um `@odata.nextLink` (URL absoluta) e devolve a página seguinte.
+
+        A `nextLink` já traz a query (filtros + `$skiptoken`/`$skip`); quando a pesquisa
+        original usou `$search`, é preciso repetir o cabeçalho `ConsistencyLevel: eventual`."""
+        headers = {"ConsistencyLevel": "eventual"} if consistency else None
+        data = await self._request(
+            "GET", next_link, access_token, headers=headers
+        ) or {}
+        messages = [self._map_message_summary(m) for m in data.get("value", [])]
+        return {"messages": messages, "next": data.get("@odata.nextLink")}
+
     async def get_message(
         self, access_token: str, message_id: str, *, select: str | None = None
     ) -> dict:
@@ -359,7 +373,8 @@ class GraphClient:
         Retry em 429 (respeita `Retry-After`); 401/403 -> `UpstreamAuthError`; >=400 ->
         `GraphError`. Respostas 202/204 (ou sem corpo) devolvem `None`.
         """
-        url = f"{self._base}{path}"
+        # `path` pode já ser uma URL absoluta (ex.: um `@odata.nextLink` de paginação).
+        url = path if path.startswith(("http://", "https://")) else f"{self._base}{path}"
         req_headers = {"Authorization": f"Bearer {access_token}"}
         if headers:
             req_headers.update(headers)
