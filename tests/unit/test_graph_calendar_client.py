@@ -39,6 +39,8 @@ def test_map_event_summary_campos():
         "isAllDay": False,
         "bodyPreview": "olá",
         "type": "singleInstance",
+        "responseStatus": {"response": "notResponded"},
+        "isOrganizer": False,
     }
     out = GraphClient._map_event_summary(e)
     assert out["id"] == "evt-1"
@@ -49,6 +51,9 @@ def test_map_event_summary_campos():
     assert out["joinUrl"] == "https://teams/join"
     assert out["isRecurring"] is False
     assert out["bodyPreview"] == "olá"
+    # A resposta do próprio e isOrganizer vêm já na listagem (para "quais por aceitar?").
+    assert out["responseStatus"] == "notResponded"
+    assert out["isOrganizer"] is False
 
 
 def test_map_event_detail_attendees_e_body():

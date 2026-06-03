@@ -608,6 +608,11 @@ class GraphClient:
             "isRecurring": cls._is_recurring(e),
             "seriesMasterId": e.get("seriesMasterId"),
             "isAllDay": e.get("isAllDay", False),
+            # A MINHA resposta a este evento (none/notResponded/accepted/declined/
+            # tentativelyAccepted/organizer) + se sou o organizador. Permite responder
+            # à pergunta "quais estão por aceitar?" já na listagem, sem ler cada evento.
+            "responseStatus": (e.get("responseStatus") or {}).get("response"),
+            "isOrganizer": e.get("isOrganizer", False),
             "bodyPreview": e.get("bodyPreview"),
         }
 
