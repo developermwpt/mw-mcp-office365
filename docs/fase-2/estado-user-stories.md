@@ -4,6 +4,12 @@
 > calendário precisa de **admin consent** do scope `Calendars.ReadWrite` no tenant (cobre
 > leitura, escrita e `getSchedule` delegado). **Não bloqueia os testes mockados** (todos a
 > passar), mas bloqueia a validação manual no tenant/VPS reais — ver `runbook-validacao-manual.md`.
+>
+> **Scope adicional (R1b).** Ler o **fuso do mailbox** (D1) exige `MailboxSettings.Read` — um
+> scope distinto do `Calendars.*`. Sem ele o Graph devolve 403 nessa leitura; o servidor
+> **degrada graciosamente para UTC** (a leitura do fuso é best-effort e nunca derruba a sessão
+> — ver melhoria pós-deploy abaixo), mas só com `MailboxSettings.Read` concedido as horas saem
+> no fuso real do utilizador. Já incluído em `GRAPH_SCOPES` (`.env`/`config.py`).
 
 ## Legenda
 
@@ -17,12 +23,16 @@
 
 | US | Descrição curta | Implementado | Testado (auto) | Validação manual | Notas |
 |----|-----------------|:---:|:---:|:---:|-------|
-| US-2.1 | Listar eventos (intervalo, auto-paginação, fuso, body sanitizado) | ✅ | ✅ | ⬜ | Auto-pagina TODO o intervalo seguindo `@odata.nextLink` (D5), sem perguntar; `auto_fetched_all=true`. Fuso do mailbox lido 1×/pedido (D1) e devolvido em `timezone`. Ocorrências de séries vêm expandidas (`isRecurring`). `bodyPreview` sanitizado + `content_is_untrusted`. Teto `_MAX_FETCH_ALL` → `truncated_at`/`fetched_all=false`. |
+| US-2.1 | Listar eventos (intervalo, auto-paginação, fuso, body sanitizado) | ✅ | ✅ | ✅¹ | Auto-pagina TODO o intervalo seguindo `@odata.nextLink` (D5), sem perguntar; `auto_fetched_all=true`. Fuso do mailbox lido 1×/pedido (D1, best-effort) e devolvido em `timezone`. Cada evento expõe `responseStatus` (a resposta do próprio) e `isOrganizer` — permite "quais por aceitar?" na própria listagem. Ocorrências de séries vêm expandidas (`isRecurring`). `bodyPreview` sanitizado + `content_is_untrusted`. Teto `_MAX_FETCH_ALL` → `truncated_at`/`fetched_all=false`. |
 | US-2.2 | Verificar disponibilidade (`getSchedule`) | ✅ | ✅ | ⬜ | `POST /me/calendar/getSchedule` (D2); o **próprio é sempre incluído** (via `/me`), dedup case-insensitive dos emails. `attendees` pode ser vazio (só o próprio). Horas no fuso do mailbox. |
 | US-2.3 | Criar evento (prepare/confirm) | ✅ | ✅ | ⬜ | D6: sem `location` → link Teams; com `location` → presencial sem link — o resumo declara sempre. D3: resumo declara "Notifica N participante(s) (domínios: …)". prepare lê o fuso mas **não cria** (`create_event` a 0); confirm cria 1×; replay idempotente; auditoria `calendar.create` (só-metadados, `subject_hash`+`online`). |
 | US-2.4 | Editar/reagendar (prepare/confirm; recorrência → clarification) | ✅ | ✅ | ⬜ | D4: recorrente sem `scope` → `needs_clarification` (sem token, `update_event` a 0). `scope='occurrence'` → PATCH ao próprio id; `scope='series'` → PATCH ao `seriesMasterId`. Só campos não-`None` entram em `changes`. Idempotência; auditoria `calendar.update` (`scope`). |
 | US-2.5 | Cancelar evento (prepare/confirm) | ✅ | ✅ | ⬜ | Só o **organizador** cancela; não-organizador → `error` orientando para `decline` (R3, antes de qualquer escrita). Recorrente sem `scope` → clarification. Resumo declara N participantes notificados + "Alto impacto". Idempotência; auditoria `calendar.cancel`. |
 | US-2.6 | Responder a convite (accept/decline/tentative) | ✅ | ✅ | ⬜ | D7: prepare lê o estado atual (`responseStatus`) e **declara a transição** ("Já tinha Aceitado; vai mudar para Recusado…"); bloqueia se o subject for o **organizador** (sem token). `response` inválida → `error`. Idempotência; auditoria `calendar.respond` (`response`+`previous`). |
+
+> ¹ US-2.1 validada no tenant real em 2026-06-03 (listagem de 7 eventos com Teams e fuso de
+> Lisboa) após as correções pós-deploy abaixo. As restantes US (2.2–2.6) continuam ⬜ até
+> validação manual no tenant real.
 
 ## Detalhe por user story
 
@@ -68,6 +78,34 @@ declara o impacto e a notificação.
 `response ∈ {accept, decline, tentative}` (senão `error`). O prepare lê o evento; se o
 organizador for o próprio → `error` (sem token). Lê o `responseStatus` atual e declara a
 transição PT no resumo. O confirm responde via `respond_event` e audita `previous`+`response`.
+
+## Correções e melhorias pós-deploy (2026-06-03, validação no tenant real)
+
+Após o primeiro deploy da Fase 2, a validação real expôs três pontos, todos corrigidos e
+re-deployados no mesmo dia:
+
+1. **Scope `Calendars.*` em falta no `.env` de produção** (commit que precedeu os abaixo). O
+   `.env` definia `GRAPH_SCOPES` explicitamente (sobrepondo o default do `config.py`) sem os
+   scopes de calendário. Adicionados `Calendars.Read`/`Calendars.ReadWrite`. **Lição:** o
+   `.env` de produção é a fonte de verdade dos scopes; alterar o default do `config.py` não
+   chega — alinhar sempre os dois (e o `.env.example`).
+
+2. **Fuso (D1) deixou de derrubar a sessão — `_resolve_tz` best-effort** (commit `f491314`).
+   `GET /me/mailboxSettings` exige `MailboxSettings.Read` (≠ `Calendars.*`); sem esse scope o
+   Graph devolvia 403. Como `_resolve_tz` passava por `call_graph`, o 403 escalava a
+   refresh→retry→reauth e **marcava a conta inteira como expirada** — derrubando também o
+   email. Corrigido: `_resolve_tz` resolve o token e chama `get_mailbox_timezone` diretamente,
+   apanhando `UpstreamAuthError`/`ReauthRequired` e devolvendo `None` (fallback UTC). Uma
+   leitura acessória **nunca mais** marca a sessão como expirada. Adicionado
+   `MailboxSettings.Read` aos scopes. Regressão:
+   `test_fuso_403_nao_derruba_sessao_nem_falha_listagem`.
+
+3. **`responseStatus`/`isOrganizer` na listagem** (commit `436f50b`). `_map_event_summary` não
+   expunha a resposta do próprio ao evento, pelo que não era possível responder a "quais
+   eventos estão por aceitar?" sem abrir cada um. O `calendarView` já devolve esses campos por
+   defeito (não há `$select` a restringir) — faltava mapeá-los. Acrescentados ao resumo +
+   descrição da tool a explicar o filtro dos pendentes (`responseStatus ∈ {notResponded,none}`
+   e `isOrganizer=false`). Teste do mapper atualizado.
 
 ## Garantias transversais (verificadas por testes)
 
