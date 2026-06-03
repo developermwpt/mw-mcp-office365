@@ -32,6 +32,13 @@ class FakeGraphClient:
         contacts: list[dict] | None = None,
         next_pages: list[dict] | None = None,
         auth_fail: dict[str, int] | None = None,
+        # --- calendário (Fase 2) ---
+        me: dict | None = None,
+        mailbox_timezone: str | None = None,
+        events: dict | None = None,
+        next_event_pages: list[dict] | None = None,
+        event: dict | None = None,
+        schedule: list[dict] | None = None,
     ) -> None:
         self.calls: list[tuple[str, tuple, dict]] = []
         self._messages = messages or {"messages": [], "next": None}
@@ -48,6 +55,15 @@ class FakeGraphClient:
         self._contacts = contacts if contacts is not None else []
         # Nº de vezes que cada método deve simular um 401/403 do Graph antes de ter sucesso.
         self._auth_fail = dict(auth_fail or {})
+        # --- calendário (Fase 2) ---
+        self._me = me or {"userPrincipalName": "subj@example.com"}
+        self._mailbox_timezone = mailbox_timezone
+        self._events = events or {"events": [], "next": None}
+        # Páginas seguintes devolvidas por `list_calendar_view_next` (por ordem).
+        self._next_event_pages = list(next_event_pages or [])
+        self._next_event_idx = 0
+        self._event = event or {"id": "evt-1", "webLink": "https://web/evt-1"}
+        self._schedule = schedule if schedule is not None else []
 
     def _record(self, name: str, *args: Any, **kwargs: Any) -> None:
         self.calls.append((name, args, kwargs))
@@ -111,6 +127,63 @@ class FakeGraphClient:
 
     async def permanent_delete(self, access_token, message_id) -> None:
         self._record("permanent_delete", access_token, message_id)
+
+    # --- identidade ---
+    async def me(self, access_token) -> dict:
+        self._record("me", access_token)
+        return self._me
+
+    # --- calendário: fuso + leitura (Fase 2) ---
+    async def get_mailbox_timezone(self, access_token) -> str | None:
+        self._record("get_mailbox_timezone", access_token)
+        return self._mailbox_timezone
+
+    async def list_calendar_view(self, access_token, **kwargs) -> dict:
+        self._record("list_calendar_view", access_token, **kwargs)
+        return self._events
+
+    async def list_calendar_view_next(
+        self, access_token, next_link, *, prefer_timezone=None
+    ) -> dict:
+        self._record("list_calendar_view_next", access_token, next_link,
+                     prefer_timezone=prefer_timezone)
+        if self._next_event_idx < len(self._next_event_pages):
+            page = self._next_event_pages[self._next_event_idx]
+            self._next_event_idx += 1
+            return {"events": page.get("events", []), "next": page.get("next")}
+        return {"events": [], "next": None}
+
+    async def get_event(self, access_token, event_id, *, prefer_timezone=None) -> dict:
+        self._record("get_event", access_token, event_id, prefer_timezone=prefer_timezone)
+        return self._event
+
+    # --- calendário: disponibilidade (Fase 2) ---
+    async def get_schedule(
+        self, access_token, *, schedules, start, end,
+        interval_minutes=30, prefer_timezone=None,
+    ) -> list[dict]:
+        self._record("get_schedule", access_token, schedules=schedules, start=start,
+                     end=end, interval_minutes=interval_minutes,
+                     prefer_timezone=prefer_timezone)
+        return self._schedule
+
+    # --- calendário: escrita (Fase 2) ---
+    async def create_event(self, access_token, *, event) -> dict:
+        self._record("create_event", access_token, event=event)
+        return self._event
+
+    async def update_event(self, access_token, event_id, *, changes) -> dict:
+        self._record("update_event", access_token, event_id, changes=changes)
+        return self._event
+
+    async def cancel_event(self, access_token, event_id, *, comment="") -> None:
+        self._record("cancel_event", access_token, event_id, comment=comment)
+
+    async def respond_event(
+        self, access_token, event_id, *, response, comment="", send_response=True
+    ) -> None:
+        self._record("respond_event", access_token, event_id, response=response,
+                     comment=comment, send_response=send_response)
 
     # --- contactos ---
     async def search_people(self, access_token, query, *, top=10) -> list[dict]:

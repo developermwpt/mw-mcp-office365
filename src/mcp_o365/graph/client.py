@@ -353,6 +353,164 @@ class GraphClient:
             "POST", f"/me/messages/{message_id}/send", access_token
         )
 
+    # --- calendário: fuso do mailbox (D1) ---
+    async def get_mailbox_timezone(self, access_token: str) -> str | None:
+        """`GET /me/mailboxSettings` -> devolve `timeZone` (ex.: 'GMT Standard Time').
+
+        None se ausente. Lido uma vez por pedido e reutilizado em leituras/escritas. O valor
+        vem TAL E QUAL do mailbox (Windows ou IANA) — o Graph aceita ambos no header
+        `Prefer`/`timeZone`; não convertemos (R2)."""
+        data = await self._request(
+            "GET", "/me/mailboxSettings", access_token
+        ) or {}
+        return data.get("timeZone")
+
+    # --- calendário: leitura (D5 auto-pagina; D1 header Prefer) ---
+    @staticmethod
+    def _prefer_tz_headers(prefer_timezone: str | None) -> dict | None:
+        """Header `Prefer: outlook.timezone="<tz>"` quando há fuso; senão None."""
+        if not prefer_timezone:
+            return None
+        return {"Prefer": f'outlook.timezone="{prefer_timezone}"'}
+
+    async def list_calendar_view(
+        self,
+        access_token: str,
+        *,
+        start: str,
+        end: str,
+        top: int = 50,
+        prefer_timezone: str | None = None,
+    ) -> dict:
+        """`GET /me/calendarView?startDateTime=&endDateTime=` — expande ocorrências de séries
+        no intervalo (D4: ler recorrências já expandidas). `$orderby=start/dateTime`.
+        Header `Prefer: outlook.timezone="<tz>"` quando `prefer_timezone`.
+        Devolve {"events": [...summary...], "next": data.get("@odata.nextLink")}."""
+        params = {
+            "startDateTime": start,
+            "endDateTime": end,
+            "$orderby": "start/dateTime",
+            "$top": top,
+        }
+        data = await self._request(
+            "GET", "/me/calendarView", access_token,
+            params=params, headers=self._prefer_tz_headers(prefer_timezone),
+        ) or {}
+        events = [self._map_event_summary(e) for e in data.get("value", [])]
+        return {"events": events, "next": data.get("@odata.nextLink")}
+
+    async def list_calendar_view_next(
+        self, access_token: str, next_link: str, *, prefer_timezone: str | None = None
+    ) -> dict:
+        """Segue um `@odata.nextLink` absoluto do calendarView. Repete o header `Prefer`
+        (o fuso não viaja na nextLink). Devolve {"events": [...], "next": ...}."""
+        data = await self._request(
+            "GET", next_link, access_token,
+            headers=self._prefer_tz_headers(prefer_timezone),
+        ) or {}
+        events = [self._map_event_summary(e) for e in data.get("value", [])]
+        return {"events": events, "next": data.get("@odata.nextLink")}
+
+    async def get_event(
+        self, access_token: str, event_id: str, *, prefer_timezone: str | None = None
+    ) -> dict:
+        """`GET /me/events/{id}` — evento completo (com corpo). Header `Prefer` quando dado.
+        Devolve _map_event_detail(data)."""
+        data = await self._request(
+            "GET", f"/me/events/{event_id}", access_token,
+            headers=self._prefer_tz_headers(prefer_timezone),
+        ) or {}
+        return self._map_event_detail(data)
+
+    # --- calendário: disponibilidade (D2) ---
+    async def get_schedule(
+        self,
+        access_token: str,
+        *,
+        schedules: list[str],
+        start: str,
+        end: str,
+        interval_minutes: int = 30,
+        prefer_timezone: str | None = None,
+    ) -> list[dict]:
+        """`POST /me/calendar/getSchedule` — free/busy do próprio + participantes (D2).
+
+        Devolve, por schedule, {email, availabilityView, scheduleItems:[{status,start,end}]}.
+        Header `Prefer` quando dado."""
+        tz = prefer_timezone or "UTC"
+        body = {
+            "schedules": schedules,
+            "startTime": {"dateTime": start, "timeZone": tz},
+            "endTime": {"dateTime": end, "timeZone": tz},
+            "availabilityViewInterval": interval_minutes,
+        }
+        data = await self._request(
+            "POST", "/me/calendar/getSchedule", access_token,
+            json_body=body, headers=self._prefer_tz_headers(prefer_timezone),
+        ) or {}
+        out: list[dict] = []
+        for s in data.get("value", []):
+            items = [
+                {
+                    "status": it.get("status"),
+                    "start": (it.get("start") or {}).get("dateTime"),
+                    "end": (it.get("end") or {}).get("dateTime"),
+                }
+                for it in s.get("scheduleItems", [])
+            ]
+            out.append(
+                {
+                    "email": s.get("scheduleId"),
+                    "availabilityView": s.get("availabilityView"),
+                    "scheduleItems": items,
+                }
+            )
+        return out
+
+    # --- calendário: escrita ---
+    async def create_event(self, access_token: str, *, event: dict) -> dict:
+        """`POST /me/events` — cria o evento (objeto Graph montado pela tool). Devolve o
+        recurso criado (mapeado por _map_event_detail; expõe pelo menos id e webLink)."""
+        data = await self._request(
+            "POST", "/me/events", access_token, json_body=event
+        ) or {}
+        return self._map_event_detail(data)
+
+    async def update_event(
+        self, access_token: str, event_id: str, *, changes: dict
+    ) -> dict:
+        """`PATCH /me/events/{id}` — aplica só os campos alterados. Devolve o atualizado."""
+        data = await self._request(
+            "PATCH", f"/me/events/{event_id}", access_token, json_body=changes
+        ) or {}
+        return self._map_event_detail(data)
+
+    async def cancel_event(
+        self, access_token: str, event_id: str, *, comment: str = ""
+    ) -> None:
+        """`POST /me/events/{id}/cancel` — cancela e notifica os participantes (organizador).
+        202/204 -> None. (Só o organizador pode cancelar — ver D7/US-2.5.)"""
+        await self._request(
+            "POST", f"/me/events/{event_id}/cancel", access_token,
+            json_body={"comment": comment},
+        )
+
+    async def respond_event(
+        self,
+        access_token: str,
+        event_id: str,
+        *,
+        response: str,
+        comment: str = "",
+        send_response: bool = True,
+    ) -> None:
+        """`POST /me/events/{id}/{response}` — responde ao convite (accept|decline|
+        tentativelyAccept). 202/204 -> None."""
+        await self._request(
+            "POST", f"/me/events/{event_id}/{response}", access_token,
+            json_body={"comment": comment, "sendResponse": send_response},
+        )
+
     # --- núcleo HTTP ---
     async def _get(self, path: str, access_token: str) -> dict:
         """Compatibilidade Fase 0: GET simples que delega no `_request`."""
@@ -419,3 +577,61 @@ class GraphClient:
             "hasAttachments": m.get("hasAttachments", False),
             "isRead": m.get("isRead"),
         }
+
+    # --- mapeamentos: calendário ---
+    @staticmethod
+    def _is_recurring(e: dict) -> bool:
+        """True se a ocorrência pertence a/ é uma série recorrente."""
+        if e.get("seriesMasterId"):
+            return True
+        return e.get("type") in ("occurrence", "exception", "seriesMaster")
+
+    @classmethod
+    def _map_event_summary(cls, e: dict) -> dict:
+        return {
+            "id": e.get("id"),
+            "subject": e.get("subject"),
+            "start": {
+                "dateTime": (e.get("start") or {}).get("dateTime"),
+                "timeZone": (e.get("start") or {}).get("timeZone"),
+            },
+            "end": {
+                "dateTime": (e.get("end") or {}).get("dateTime"),
+                "timeZone": (e.get("end") or {}).get("timeZone"),
+            },
+            "location": (e.get("location") or {}).get("displayName"),
+            "organizer": ((e.get("organizer") or {}).get("emailAddress") or {}).get(
+                "address"
+            ),
+            "isOnlineMeeting": e.get("isOnlineMeeting", False),
+            "joinUrl": (e.get("onlineMeeting") or {}).get("joinUrl"),
+            "isRecurring": cls._is_recurring(e),
+            "seriesMasterId": e.get("seriesMasterId"),
+            "isAllDay": e.get("isAllDay", False),
+            "bodyPreview": e.get("bodyPreview"),
+        }
+
+    @classmethod
+    def _map_event_detail(cls, e: dict) -> dict:
+        detail = cls._map_event_summary(e)
+        detail.update(
+            {
+                "attendees": [
+                    {
+                        "email": ((a.get("emailAddress") or {}).get("address")),
+                        "name": ((a.get("emailAddress") or {}).get("name")),
+                        "type": a.get("type"),
+                        "responseStatus": ((a.get("status") or {}).get("response")),
+                    }
+                    for a in e.get("attendees", [])
+                ],
+                "responseStatus": (e.get("responseStatus") or {}).get("response"),
+                "body": {
+                    "contentType": (e.get("body") or {}).get("contentType"),
+                    "content": (e.get("body") or {}).get("content"),
+                },
+                "webLink": e.get("webLink"),
+                "type": e.get("type"),
+            }
+        )
+        return detail
