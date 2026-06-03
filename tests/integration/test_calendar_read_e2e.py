@@ -240,3 +240,31 @@ async def test_availability_sem_conta_pede_reauth(mapping, store, config, clock)
     )
     assert out["status"] == "reauth_required"
     assert gc.calls == []
+
+
+async def test_fuso_403_nao_derruba_sessao_nem_falha_listagem(mapping, store, config, clock):
+    """Regressão (bug de produção 2026-06-03): um 403 a ler o fuso (scope
+    MailboxSettings.Read em falta) NÃO pode marcar a conta como expirada nem falhar a
+    listagem. Deve degradar para UTC (timezone=None) e devolver os eventos normalmente."""
+    _link(mapping, clock)
+    gc = FakeGraphClient(
+        mailbox_timezone="GMT Standard Time",  # nunca chega a ser lido: get_mailbox_timezone dá 403
+        events={"events": [{"id": "evt-1", "subject": "Reunião"}], "next": None},
+        auth_fail={"get_mailbox_timezone": 99},  # 403 persistente na leitura do fuso
+    )
+    out = await cal.run_calendar_list_events(
+        "subj-1", mapping=mapping, plane_b=_plane_b(config, clock),
+        graph_client=gc, store=store,
+        start="2026-06-10T00:00:00Z", end="2026-06-11T00:00:00Z", clock=clock,
+    )
+    # A listagem teve sucesso, com fallback para UTC (sem fuso).
+    assert out["status"] == "ok"
+    assert out["count"] == 1
+    assert out["timezone"] is None
+    # O calendarView foi mesmo chamado (a falha do fuso não impediu o pedido principal).
+    assert gc.count("list_calendar_view") == 1
+    # CRÍTICO: a conta continua ativa — a falha do fuso não a marcou como expirada
+    # (senão o email também passaria a falhar).
+    account = mapping.select_account("subj-1")
+    assert account is not None
+    assert account.status == "active"

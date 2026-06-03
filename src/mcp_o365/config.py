@@ -32,7 +32,7 @@ class Settings(BaseSettings):
     oauth_redirect_uri: str = Field(..., alias="OAUTH_REDIRECT_URI")
     graph_scopes_raw: str = Field(
         "User.Read Mail.Read Mail.Send Mail.ReadWrite Calendars.ReadWrite "
-        "People.Read Contacts.Read offline_access openid profile",
+        "MailboxSettings.Read People.Read Contacts.Read offline_access openid profile",
         alias="GRAPH_SCOPES",
     )
 
