@@ -92,13 +92,20 @@ def build_server(
     # --- Email: leitura (read-only) ---
     @mcp.tool(
         description=(
-            "Pesquisa emails (read-only). Filtros opcionais: from_, subject_contains, "
-            "date_from/date_to (ISO 8601), query (pesquisa full-text), folder, top (página, "
-            "default 50), skip, fetch_all. Pesquisa POR PERÍODO (date_from/date_to): se houver "
-            "mais emails do que `top` e o período for > 24h, devolve status='needs_clarification' "
-            "— PERGUNTE ao utilizador se quer todos (repita com fetch_all=true e os mesmos "
-            "filtros) ou só os primeiros `top`. Se o período for <= 24h, devolve "
-            "automaticamente todos (não pergunte)."
+            "Pesquisa emails (read-only). Filtros: from_, subject_contains, date_from/date_to "
+            "(ISO 8601, ex.: 2026-06-01T00:00:00Z), query (full-text), folder, top (página, "
+            "default 50), skip, fetch_all.\n"
+            "REGRA OBRIGATÓRIA — janelas temporais: para QUALQUER pedido com tempo ('hoje', "
+            "'ontem', 'esta semana', 'últimos N dias', 'entre X e Y', 'este mês'), traduza "
+            "SEMPRE a janela para date_from E date_to em ISO 8601 e passe-os. NÃO resolva o "
+            "período mentalmente nem confie só no top/ordenação — é date_from/date_to que ativa "
+            "a lógica de período no servidor.\n"
+            "Resposta por período: se o período for > 24h e houver mais emails do que `top`, a "
+            "tool devolve status='needs_clarification' com uma pergunta e duas opções. Nesse "
+            "caso PARE: não resuma nem liste como se fossem todos — apresente a pergunta e as "
+            "opções e ESPERE a escolha (todos = repetir com fetch_all=true e os mesmos filtros; "
+            "ou apenas os primeiros `top`). Se o período for <= 24h, a tool devolve "
+            "automaticamente TODOS os emails (status='ok', auto_fetched_all=true)."
         )
     )
     async def email_search(
