@@ -14,8 +14,14 @@ from __future__ import annotations
 import base64
 import io
 import logging
+import xml.etree.ElementTree as ET
+import zipfile
 
 logger = logging.getLogger("mcp_o365.graph.attachments")
+
+# Namespaces OOXML (Word/PowerPoint).
+_W_NS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+_A_NS = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
 
 # Limite de caracteres devolvidos ao modelo (evita despejar documentos enormes no contexto).
 _MAX_TEXT_CHARS = 50_000
@@ -30,6 +36,26 @@ def _is_pdf(name: str | None, content_type: str | None) -> bool:
     return (content_type or "").lower().startswith("application/pdf") or (
         (name or "").lower().endswith(".pdf")
     )
+
+
+def _is_docx(name: str | None, content_type: str | None) -> bool:
+    ct = (content_type or "").lower()
+    return (
+        "wordprocessingml.document" in ct
+        or (name or "").lower().endswith(".docx")
+    )
+
+
+def _is_pptx(name: str | None, content_type: str | None) -> bool:
+    ct = (content_type or "").lower()
+    return (
+        "presentationml.presentation" in ct
+        or (name or "").lower().endswith(".pptx")
+    )
+
+
+def _is_legacy_office(name: str | None) -> bool:
+    return (name or "").lower().endswith((".doc", ".ppt", ".xls"))
 
 
 def _is_text(name: str | None, content_type: str | None) -> bool:
@@ -74,6 +100,63 @@ def _extract_pdf(raw: bytes) -> dict:
     return out
 
 
+def _extract_docx(raw: bytes) -> dict:
+    """Extrai texto de um .docx (OOXML = ZIP com XML). Só biblioteca-padrão."""
+    try:
+        with zipfile.ZipFile(io.BytesIO(raw)) as zf:
+            xml = zf.read("word/document.xml")
+    except (zipfile.BadZipFile, KeyError, OSError):
+        logger.warning(
+            "falha a abrir o .docx",
+            extra={"fields": {"event": "attachment_extract_error", "kind": "docx"}},
+        )
+        return {"extractable": False, "reason": "não foi possível ler o .docx."}
+    try:
+        root = ET.fromstring(xml)
+    except ET.ParseError:
+        return {"extractable": False, "reason": "não foi possível ler o .docx (XML)."}
+
+    # Cada parágrafo (w:p) → junta o texto dos seus runs (w:t); parágrafos por linha.
+    paragraphs = []
+    for para in root.iter(f"{_W_NS}p"):
+        runs = [node.text or "" for node in para.iter(f"{_W_NS}t")]
+        paragraphs.append("".join(runs))
+    text = "\n".join(paragraphs).strip()
+    if not text:
+        return {"extractable": False, "reason": ".docx sem texto extraível."}
+    return _truncate(text)
+
+
+def _extract_pptx(raw: bytes) -> dict:
+    """Extrai texto de um .pptx (OOXML), slide a slide. Só biblioteca-padrão."""
+    try:
+        with zipfile.ZipFile(io.BytesIO(raw)) as zf:
+            slides = sorted(
+                n for n in zf.namelist()
+                if n.startswith("ppt/slides/slide") and n.endswith(".xml")
+            )
+            chunks = []
+            for slide_name in slides:
+                try:
+                    root = ET.fromstring(zf.read(slide_name))
+                except ET.ParseError:
+                    continue
+                texts = [node.text or "" for node in root.iter(f"{_A_NS}t")]
+                slide_text = "\n".join(t for t in texts if t.strip())
+                if slide_text:
+                    chunks.append(slide_text)
+    except (zipfile.BadZipFile, OSError):
+        logger.warning(
+            "falha a abrir o .pptx",
+            extra={"fields": {"event": "attachment_extract_error", "kind": "pptx"}},
+        )
+        return {"extractable": False, "reason": "não foi possível ler o .pptx."}
+    text = "\n\n".join(chunks).strip()
+    if not text:
+        return {"extractable": False, "reason": ".pptx sem texto extraível."}
+    return _truncate(text)
+
+
 def extract_attachment_text(
     *, name: str | None, content_type: str | None, content_bytes_b64: str | None
 ) -> dict:
@@ -92,8 +175,20 @@ def extract_attachment_text(
 
     if _is_pdf(name, content_type):
         return _extract_pdf(raw)
+    if _is_docx(name, content_type):
+        return _extract_docx(raw)
+    if _is_pptx(name, content_type):
+        return _extract_pptx(raw)
     if _is_text(name, content_type):
         return _truncate(raw.decode("utf-8", errors="replace"))
+    if _is_legacy_office(name):
+        return {
+            "extractable": False,
+            "reason": (
+                "formato Office legado (.doc/.ppt/.xls) não suportado para extração; "
+                "peça o ficheiro em formato moderno (.docx/.pptx/.xlsx)."
+            ),
+        }
     return {
         "extractable": False,
         "reason": (

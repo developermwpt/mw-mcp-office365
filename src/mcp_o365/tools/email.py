@@ -338,7 +338,10 @@ async def run_email_list_attachments(
     clock: Callable[[], datetime] = _utcnow,
 ) -> dict:
     """US-1.5 — Lista anexos; com `download=True` + `attachment_id` devolve o **texto
-    extraído** (PDF/texto) pronto a ler. Os bytes em base64 só seguem com `include_bytes=True`."""
+    extraído no servidor** (PDF, Word .docx, PowerPoint .pptx e ficheiros de texto) pronto
+    a ler. Para estes tipos NÃO use `include_bytes`: o conteúdo legível já vem em
+    `extracted_text`. Os bytes em base64 só seguem com `include_bytes=True` (último recurso
+    para tipos sem extração suportada)."""
     if download and attachment_id:
         try:
             _, attachment = await call_graph(
