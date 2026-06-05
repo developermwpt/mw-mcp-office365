@@ -24,15 +24,19 @@
 | US | Descrição curta | Implementado | Testado (auto) | Validação manual | Notas |
 |----|-----------------|:---:|:---:|:---:|-------|
 | US-2.1 | Listar eventos (intervalo, auto-paginação, fuso, body sanitizado) | ✅ | ✅ | ✅¹ | Auto-pagina TODO o intervalo seguindo `@odata.nextLink` (D5), sem perguntar; `auto_fetched_all=true`. Fuso do mailbox lido 1×/pedido (D1, best-effort) e devolvido em `timezone`. Cada evento expõe `responseStatus` (a resposta do próprio) e `isOrganizer` — permite "quais por aceitar?" na própria listagem. Ocorrências de séries vêm expandidas (`isRecurring`). `bodyPreview` sanitizado + `content_is_untrusted`. Teto `_MAX_FETCH_ALL` → `truncated_at`/`fetched_all=false`. |
-| US-2.2 | Verificar disponibilidade (`getSchedule`) | ✅ | ✅ | ⬜ | `POST /me/calendar/getSchedule` (D2); o **próprio é sempre incluído** (via `/me`), dedup case-insensitive dos emails. `attendees` pode ser vazio (só o próprio). Horas no fuso do mailbox. |
-| US-2.3 | Criar evento (prepare/confirm) | ✅ | ✅ | ⬜ | D6: sem `location` → link Teams; com `location` → presencial sem link — o resumo declara sempre. D3: resumo declara "Notifica N participante(s) (domínios: …)". prepare lê o fuso mas **não cria** (`create_event` a 0); confirm cria 1×; replay idempotente; auditoria `calendar.create` (só-metadados, `subject_hash`+`online`). |
-| US-2.4 | Editar/reagendar (prepare/confirm; recorrência → clarification) | ✅ | ✅ | ⬜ | D4: recorrente sem `scope` → `needs_clarification` (sem token, `update_event` a 0). `scope='occurrence'` → PATCH ao próprio id; `scope='series'` → PATCH ao `seriesMasterId`. Só campos não-`None` entram em `changes`. Idempotência; auditoria `calendar.update` (`scope`). |
-| US-2.5 | Cancelar evento (prepare/confirm) | ✅ | ✅ | ⬜ | Só o **organizador** cancela; não-organizador → `error` orientando para `decline` (R3, antes de qualquer escrita). Recorrente sem `scope` → clarification. **Mensagem de cancelamento (melhoria 2026-06-03):** se `message_choice_confirmed=false` → `needs_clarification` (mensagem própria / **sugestão a aceitar antes** / nenhuma); sem token, sem cancel. Resumo declara N participantes notificados + "Alto impacto". Idempotência; auditoria `calendar.cancel`. |
+| US-2.2 | Verificar disponibilidade (`getSchedule`) | ✅ | ✅ | ✅² | `POST /me/calendar/getSchedule` (D2); o **próprio é sempre incluído** (via `/me`), dedup case-insensitive dos emails. `attendees` pode ser vazio (só o próprio). Horas no fuso do mailbox. |
+| US-2.3 | Criar evento (prepare/confirm) | ✅ | ✅ | ✅² | D6: sem `location` → link Teams; com `location` → presencial sem link — o resumo declara sempre. D3: resumo declara "Notifica N participante(s) (domínios: …)". prepare lê o fuso mas **não cria** (`create_event` a 0); confirm cria 1×; replay idempotente; auditoria `calendar.create` (só-metadados, `subject_hash`+`online`). |
+| US-2.4 | Editar/reagendar (prepare/confirm; recorrência → clarification) | ✅ | ✅ | ✅² | D4: recorrente sem `scope` → `needs_clarification` (sem token, `update_event` a 0). `scope='occurrence'` → PATCH ao próprio id; `scope='series'` → PATCH ao `seriesMasterId`. Só campos não-`None` entram em `changes`. Idempotência; auditoria `calendar.update` (`scope`). |
+| US-2.5 | Cancelar evento (prepare/confirm) | ✅ | ✅ | ✅² | Só o **organizador** cancela; não-organizador → `error` orientando para `decline` (R3, antes de qualquer escrita). Recorrente sem `scope` → clarification. **Mensagem de cancelamento (melhoria 2026-06-03):** se `message_choice_confirmed=false` → `needs_clarification` (mensagem própria / **sugestão a aceitar antes** / nenhuma); sem token, sem cancel. Resumo declara N participantes notificados + "Alto impacto". Idempotência; auditoria `calendar.cancel`. |
 | US-2.6 | Responder a convite (accept/decline/tentative) | ✅ | ✅ | ⬜ | D7: prepare lê o estado atual (`responseStatus`) e **declara a transição** ("Já tinha Aceitado; vai mudar para Recusado…"); bloqueia se o subject for o **organizador** (sem token). `response` inválida → `error`. **Recusar (decline)**: se `message_choice_confirmed=false` → `needs_clarification` a perguntar se quer enviar mensagem ao organizador e qual (sem token); repetir com `comment` (com mensagem), `comment=''` (sem mensagem, notifica) ou `notify_organizer=false` (sem notificar). Idempotência; auditoria `calendar.respond` (`response`+`previous`+`notified`). |
 
 > ¹ US-2.1 validada no tenant real em 2026-06-03 (listagem de 7 eventos com Teams e fuso de
-> Lisboa) após as correções pós-deploy abaixo. As restantes US (2.2–2.6) continuam ⬜ até
-> validação manual no tenant real.
+> Lisboa) após as correções pós-deploy abaixo.
+>
+> ² US-2.2 a US-2.5 validadas no tenant real em **2026-06-05** (validador: Marcio Martins),
+> após o **admin consent de `Calendars.ReadWrite`** ter sido concedido no tenant Entra (R1
+> resolvido). Falta apenas a **US-2.6** (responder a convite), agendada para validação manual
+> posterior — única US ainda ⬜ na coluna de validação real.
 
 ## Detalhe por user story
 
