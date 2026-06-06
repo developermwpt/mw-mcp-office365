@@ -8,13 +8,30 @@
 > sobrescreveria-o); A2 — o resumo de `teams_send_message_prepare` é montado a partir de
 > `get_chat(chat_id)` (leitura pontual robusta a >50 chats), não de um match sobre `list_chats`.
 
-> **Pré-requisito da validação real (R1).** Tal como o `Calendars.ReadWrite` na Fase 2, as
-> operações de Teams precisam de **admin consent** dos scopes `Chat.Read`/`Chat.ReadWrite` no
-> tenant Entra (mesmo procedimento do `Calendars.ReadWrite`). **Não bloqueia os testes
-> mockados** (todos a passar), mas bloqueia a validação manual no tenant/VPS reais — ver
-> `runbook-validacao-manual.md`. Os scopes já estão no default de `GRAPH_SCOPES` (`config.py`);
-> falta o consent do admin Entra + alinhar o `.env` de produção (lição da Fase 2). **Re-login
-> após o consent** para o token Graph passar a incluir os scopes de Teams.
+> **Pré-requisito da validação real (R1) — admin consent CONCEDIDO (2026-06-06).** Tal como o
+> `Calendars.ReadWrite` na Fase 2, as operações de Teams precisam de **admin consent** dos scopes
+> `Chat.Read`/`Chat.ReadWrite` no tenant Entra. **Estado:** o admin consent foi **concedido no
+> Entra em 2026-06-06**. Os scopes já estão no default de `GRAPH_SCOPES` (`config.py`) e no
+> `.env.example`. **Falta ainda (operacional, na VPS):** alinhar o `GRAPH_SCOPES` do `.env` de
+> produção — que se sobrepõe ao default do `config.py` (lição da Fase 2, correção pós-deploy nº 1)
+> — fazer deploy da build da Fase 3 e **reiniciar**, e depois **re-login** dos utilizadores para o
+> token Graph passar a incluir os scopes de Teams. Os testes mockados nunca foram bloqueados por
+> isto (254 a passar).
+
+> **Confirmação das permissões do Graph (2026-06-06).** Verificado na documentação oficial do
+> Microsoft Graph que **`Chat.ReadWrite` é suficiente para criar conversa** (`POST /chats`) — a
+> permissão `Chat.Create` que aparece no Entra é a alternativa de *menor privilégio* (só criar) e
+> **não é necessária** além do `Chat.ReadWrite`, que já engloba criar+ler+enviar. A doc confirma
+> ainda a **idempotência do 1:1** ("só pode existir uma conversa 1:1 entre dois membros; se já
+> existir, devolve a existente e não cria nova") — exatamente o pressuposto de `create_one_on_one_chat`
+> e do fluxo procurar→criar da US-3.4 (D1/D3). **Limite conhecido (não bug):** *descobrir* uma
+> pessoa nova POR NOME depende do `resolve_recipient` (People `People.Read` + Contactos
+> `Contacts.Read`), que cobre contactos e pessoas relevantes; um estranho total no diretório, sem
+> qualquer relação, pode não ser resolvido (não há scope de diretório `User.ReadBasic.All` — fora
+> do âmbito da Fase 3). Nesse caso, indicar o **email exato** permite criar a conversa na mesma.
+> Fontes: [Create chat](https://learn.microsoft.com/en-us/graph/api/chat-post?view=graph-rest-1.0),
+> [Send message in a chat](https://learn.microsoft.com/en-us/graph/api/chat-post-messages?view=graph-rest-1.0),
+> [Permissions reference](https://learn.microsoft.com/en-us/graph/permissions-reference).
 
 ## Legenda
 
