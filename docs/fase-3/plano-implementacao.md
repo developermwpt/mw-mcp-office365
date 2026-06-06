@@ -2,8 +2,8 @@
 
 **Projeto:** mw-mcp-office365 (Mobiweb)
 **Documento:** Contrato de implementação técnica da Fase 3 (Teams / mensagens de chat / Microsoft Graph)
-**Estado:** Contrato para o developer. Decisões fechadas pelo PM (D1–D11). Aprovação do coordenador pendente.
-**Referências:** [Análise Funcional — Teams (Fase 3)](analise-funcional-teams.md) · [Análise Funcional v1.1](../analise-funcional-v1.1.md) · [Fase 2 — plano de implementação](../fase-2/plano-implementacao.md) · [Fase 2 — estado das US](../fase-2/estado-user-stories.md) · [Playbook do assistente](../../src/prompts/assistant-playbook.md)
+**Estado:** Contrato para o developer. Decisões fechadas pelo PM (D1–D11). **Revisto pelo coordenador (APROVADO COM RESSALVAS); achados A1 e A2 incorporados — ver §9.** Pronto para implementação.
+**Referências:** [Análise Funcional — Teams (Fase 3)](analise-funcional-teams.md) · [Revisão do coordenador](revisao-coordenador.md) · [Análise Funcional v1.1](../analise-funcional-v1.1.md) · [Fase 2 — plano de implementação](../fase-2/plano-implementacao.md) · [Fase 2 — estado das US](../fase-2/estado-user-stories.md) · [Playbook do assistente](../../src/prompts/assistant-playbook.md)
 
 > **Âmbito desta entrega.** APENAS o módulo **Teams — chats 1:1 e de grupo** (US-3.1 a US-3.5). **Canais de equipas, reações, edição/eliminação, ficheiros em chat, cartões acionáveis, presença/chamadas** ficam FORA (diferidos — ver §1 da análise). O developer segue ESTE contrato à risca, reutilizando todos os padrões da Fase 1/2 (não reinventar). A entrega inclui código + testes com Graph/Entra **mockados** (FakeGraphClient estendido). A validação no tenant real é manual e fica condicionada ao admin consent dos scopes `Chat.*` (ver §7) — **não bloqueia os testes mockados**.
 
@@ -51,7 +51,7 @@ A análise funcional deixou D1–D11 em aberto. Ficam aqui **fechadas** e são v
 
 | Ficheiro | Ação | Responsabilidade |
 |----------|------|------------------|
-| `src/mcp_o365/tools/teams.py` | **CRIAR** | Funções `run_teams_*` (read + prepare/confirm), à imagem de `tools/calendar.py`. Imports idênticos: `call_graph`, `reauth_response`, `resolve_access_token`, `ApprovalEngine`, `log_audit`, `subject_hash`, `sanitize_html`, `_confirm` (copiar o adaptador comum). |
+| `src/mcp_o365/tools/teams.py` | **CRIAR** | Funções `run_teams_*` (read + prepare/confirm), à imagem de `tools/calendar.py`. Imports idênticos: `call_graph`, `reauth_response`, `resolve_access_token`, `ApprovalEngine`, `log_audit`, `sanitize_html`, `_confirm` (copiar o adaptador comum). **Sem** `subject_hash` (correção A1 — o `log_audit` já emite o hash da identidade; a tool não passa `subject_hash` em `extra`). |
 | `src/mcp_o365/graph/client.py` | **ALTERAR** | Acrescentar os métodos Graph de Teams (§2.1) + os mapeadores `_map_chat_summary`/`_map_chat_message`/`_map_chat_member`. Não tocar no `_request` (já suporta URLs absolutos, retry 429 e 401/403→`UpstreamAuthError`). |
 | `src/mcp_o365/server.py` | **ALTERAR** | Registar 2 tools read + 2 pares prepare/confirm (6 tools no total: 2 read + 4 write); reforçar `instructions` com a regra Teams (resolver nome a montante; chat_id; conteúdo não-confiável; criar chat = escrita). |
 | `src/mcp_o365/config.py` | **ALTERAR** | Acrescentar `Chat.Read` e `Chat.ReadWrite` ao default de `graph_scopes_raw` (ver §7). |
@@ -86,6 +86,13 @@ async def list_chats_next(self, access_token: str, next_link: str) -> dict:
     """Segue um `@odata.nextLink` absoluto de `/me/chats`.
     Devolve {"chats": [...], "next": ...}. (Usado só se a tool precisar de mais
     do que a 1ª página para satisfazer o filtro client-side — ver D2.)"""
+
+async def get_chat(self, access_token: str, chat_id: str) -> dict:
+    """`GET /me/chats/{chat_id}?$expand=members` — um chat por id, com membros.
+    LEITURA pontual usada pelo `teams_send_message_prepare` para montar o resumo de
+    confirmação (tipo de chat + membros + domínios) de forma fiável, mesmo quando o
+    utilizador tem mais chats do que cabem numa página de `list_chats` (achado A2 da
+    revisão do coordenador). Devolve _map_chat_summary(data)."""
 
 # --- Teams: ler mensagens de um chat (US-3.2; D4 top; D5 has_more) ---
 async def list_chat_messages(
@@ -262,7 +269,7 @@ async def run_teams_send_message_prepare(
   - `chat_id` e `body` obrigatórios → `error` se faltar.
   - `body_type` em `_VALID_BODY_TYPES` (D6) → `error` "Formato inválido. Use 'text' ou 'html'."
   - `len(body) <= _MAX_BODY_CHARS` (D10) → `error` "Mensagem demasiado longa (N caracteres; máximo M). Divida em partes."
-- **Leitura acessória (best-effort, para o resumo):** o prepare LÊ o chat (via `list_chats` + match por `chat_id`, ou um futuro `get_chat`) para obter `chat_type` e membros e montar o resumo. Esta leitura **nunca escreve** (invariante prepare-não-escreve mantém-se) e, se falhar por motivo não-auth, degrada graciosamente (resumo sem detalhes do chat) — mesmo cuidado do `_resolve_tz` da Fase 2. `ReauthRequired` → `reauth_response`.
+- **Leitura acessória (best-effort, para o resumo):** o prepare LÊ o chat via **`get_chat(chat_id)`** (não `list_chats` + match — achado A2 da revisão do coordenador: o match sobre a 1ª página de `list_chats` perde os detalhes para utilizadores com >50 chats, enfraquecendo a barreira anti-erro na escrita mais frequente) para obter `chat_type` e membros e montar o resumo. Esta leitura **nunca escreve** (invariante prepare-não-escreve mantém-se) e, se falhar por motivo não-auth, degrada graciosamente (resumo sem detalhes do chat) — mesmo cuidado do `_resolve_tz` da Fase 2. `ReauthRequired` → `reauth_response`.
 - **Resumo declara:** `"Enviar mensagem no chat <tipo: 1:1 | de grupo> com N participante(s) (domínios: …) [formato: <text|html>]."` Usar `_domains([m['email'] for m in members if m.get('email')])`.
 - **Payload de aprovação (NÃO escrito):** `{"chat_id", "content": body, "content_type": body_type, "chat_type", "recipients_count": N}`.
 - **`confirm`:** `executor` chama `graph_client.send_chat_message(token, payload["chat_id"], content=payload["content"], content_type=payload["content_type"])`; auditoria `teams.send` (ver §5); devolve `{"operation","chat_id":payload["chat_id"],"message_id":created.get("id"),"message":"Mensagem enviada."}`.
@@ -368,8 +375,8 @@ onde `_chat_from(m)` extrai `((m.get("from") or {}).get("user") or {})` → `{"n
    - `action`: `teams.send` (US-3.3/3.5) | `teams.chat_create` (US-3.4).
    - `target`: o `chat_id` (em `teams.chat_create`, o `chat_id` criado).
    - `recipients_count`: nº de membros do chat (em `teams.send`); em `teams.chat_create`, 1 (o outro membro).
-   - `extra`: `teams.send` → `{chat_type, body_type, "subject_hash": subject_hash(<referência curta, ex.: chat_id>)}`; `teams.chat_create` → `{chat_type: "oneOnOne", is_new_chat: true}`. **NUNCA** o texto da mensagem, nomes ou emails em claro.
-   > MICRO-DECISÃO: a análise pede "auditoria só-metadados `teams.send` com `subject_hash`". Como uma mensagem de chat não tem "assunto", usamos `subject_hash` de uma **referência curta pseudonimizada** (o `chat_id`) — coerente com o uso do helper na Fase 2 e nunca conteúdo em claro. Assinalado para revisão.
+   - `extra`: `teams.send` → `{chat_type, body_type}`; `teams.chat_create` → `{chat_type: "oneOnOne", is_new_chat: true}`. **NUNCA** o texto da mensagem, nomes ou emails em claro.
+   > **Correção A1 (revisão do coordenador) — NÃO pôr `subject_hash` em `extra`.** A análise pede "auditoria só-metadados com `subject_hash`", mas o `log_audit` **já emite** o `subject_hash` da *identidade do utilizador* (campo de topo) e faz `fields.update(extra)`. Injetar um segundo `subject_hash(chat_id)` em `extra` **sobrescreveria silenciosamente** o hash da identidade — uma regressão de privacidade, não uma melhoria. Além disso o `chat_id` não é PII e já é registado como `target`. O precedente real (`email.send`) não coloca `subject_hash` em `extra`. Decisão: `extra` de `teams.send` = `{chat_type, body_type}`, sem `subject_hash`.
 
 ---
 
@@ -377,11 +384,12 @@ onde `_chat_from(m)` extrai `((m.get("from") or {}).get("user") or {})` → `{"n
 
 ### 6.1 FakeGraphClient — métodos a acrescentar (`tests/integration/fake_graph.py`)
 
-Estender o `__init__` com: `chats` (`{"chats":[],"next":None}`), `next_chat_pages` (lista, consumida por ordem), `chat_messages` (`{"messages":[],"next":None}`), `next_message_pages` (lista), `created_chat` (devolvido por `create_one_on_one_chat`), `sent_message` (devolvido por `send_chat_message`). Acrescentar métodos que reutilizam o `_record(...)`/`auth_fail` existentes:
+Estender o `__init__` com: `chats` (`{"chats":[],"next":None}`), `next_chat_pages` (lista, consumida por ordem), `chat` (devolvido por `get_chat`), `chat_messages` (`{"messages":[],"next":None}`), `next_message_pages` (lista), `created_chat` (devolvido por `create_one_on_one_chat`), `sent_message` (devolvido por `send_chat_message`). Acrescentar métodos que reutilizam o `_record(...)`/`auth_fail` existentes:
 
 ```python
 async def list_chats(self, access_token, *, top=50): ...                 # -> self._chats
 async def list_chats_next(self, access_token, next_link): ...            # consome next_chat_pages
+async def get_chat(self, access_token, chat_id): ...                     # -> self._chat (A2: resumo do prepare)
 async def list_chat_messages(self, access_token, chat_id, *, top=25): ...# -> self._chat_messages
 async def list_chat_messages_next(self, access_token, next_link): ...    # consome next_message_pages
 async def create_one_on_one_chat(self, access_token, *, member_emails): ...  # -> self._created_chat
@@ -393,7 +401,7 @@ Reutilizar `count(name)` para provar invariantes (ex.: `send_chat_message` chama
 
 - **US-3.1 (`test_teams_read_e2e.py`):** listagem simples (1:1 + grupo); `filter_text` por tópico → só o grupo; `filter_text` por nome/email de membro → só os chats com esse membro; `members` traz só nome+email; `last_message_preview` HTML sanitizado + `content_is_untrusted`; `reauth_required` via `auth_fail`.
 - **US-3.2 (`test_teams_read_e2e.py`):** `top` default 25 e clamp a 50 (passar `top=999` → pede 50); `has_more=true` + `next_link` quando há `next`; `page_token` chama `list_chat_messages_next` (count) e NÃO `list_chat_messages`; mensagem de sistema → `is_system=true` (D8); corpo HTML sanitizado + `content_is_untrusted`; `chat_id` em falta → `error`; `reauth_required`.
-- **US-3.3 (`test_teams_write_e2e.py`):** prepare devolve token e NÃO chama `send_chat_message` (count=0); resumo contém "chat de grupo"/"1:1", "N participante(s)", domínios e formato; `body_type='html'` aceite; `body_type='xml'` → `error`; `body` > `_MAX_BODY_CHARS` → `error` (sem token); confirm envia (count=1) e audita `teams.send`; replay → `idempotent_replay`, count fica 1; reauth no prepare e no confirm.
+- **US-3.3 (`test_teams_write_e2e.py`):** prepare devolve token e NÃO chama `send_chat_message` (count=0); o resumo é montado a partir de **`get_chat`** (count=1 no prepare — A2) e contém "chat de grupo"/"1:1", "N participante(s)", domínios e formato; `get_chat` a falhar (não-auth) → resumo degrada sem detalhes mas ainda emite token; `body_type='html'` aceite; `body_type='xml'` → `error`; `body` > `_MAX_BODY_CHARS` → `error` (sem token); confirm envia (count=1) e audita `teams.send` com `extra={chat_type, body_type}` **sem `subject_hash` em extra** (A1) — o `subject_hash` de topo (identidade) continua presente; replay → `idempotent_replay`, count fica 1; reauth no prepare e no confirm.
 - **US-3.4 (`test_teams_write_e2e.py`):** chat 1:1 já existe (presente em `chats`) → prepare devolve `status='ok'` + `chat_id`, sem token, `create_one_on_one_chat` count=0; chat inexistente → `pending_confirmation` (token), `create_one_on_one_chat` ainda a 0; confirm cria (count=1) e audita `teams.chat_create`; replay idempotente (count fica 1); `member_email` em falta → `error`; reauth.
 - **US-3.5:** coberta por US-3.3 (responder = enviar no mesmo `chat_id`); um caso explícito a documentar que reusa o mesmo par prepare/confirm.
 - **Transversais:** TTL expirado → `expired`; token de outro subject → `error`; prepare-não-escreve provado por counts nas 2 escritas (`send_chat_message`, `create_one_on_one_chat`).
@@ -402,7 +410,7 @@ Reutilizar `count(name)` para provar invariantes (ex.: `send_chat_message` chama
 
 - `_map_chat_summary` com payload realista (1:1 sem tópico; grupo com tópico; membros com e sem email → `aad_user_id` fallback; `lastMessagePreview` presente/ausente).
 - `_map_chat_message` / `_chat_from`: `messageType=="message"` → `is_system=false`; `systemEventMessage` → `is_system=true`; `from` nulo → `None`; `attachments_count`.
-- `list_chats` monta `$expand=members`/`$top`; `list_chat_messages` monta `$top`/`$orderby=createdDateTime desc`; `send_chat_message` monta o body `{"body":{"contentType","content"}}` certo (text e html); `create_one_on_one_chat` monta `chatType=oneOnOne` + `members[]` com `user@odata.bind`.
+- `list_chats` monta `$expand=members`/`$top`; `get_chat` monta `GET /me/chats/{id}?$expand=members` (A2); `list_chat_messages` monta `$top`/`$orderby=createdDateTime desc`; `send_chat_message` monta o body `{"body":{"contentType","content"}}` certo (text e html); `create_one_on_one_chat` monta `chatType=oneOnOne` + `members[]` com `user@odata.bind`.
 - Paginação: `list_chats_next`/`list_chat_messages_next` seguem `@odata.nextLink` absoluto.
 
 Correr: `python -m pytest -q` · lint: `python -m ruff check src tests`.
@@ -413,10 +421,10 @@ Correr: `python -m pytest -q` · lint: `python -m ruff check src tests`.
 
 ### 7.1 Ordem recomendada
 
-1. **Scopes + client base.** `config.py`: acrescentar `Chat.Read Chat.ReadWrite` ao default de `GRAPH_SCOPES`. Acrescentar `_map_chat_summary`/`_map_chat_message`/`_chat_from`/`_map_chat_member` + os 6 métodos Graph em `client.py`. Unit dos mapeadores.
+1. **Scopes + client base.** `config.py`: acrescentar `Chat.Read Chat.ReadWrite` ao default de `GRAPH_SCOPES`. Acrescentar `_map_chat_summary`/`_map_chat_message`/`_chat_from`/`_map_chat_member` + os 7 métodos Graph em `client.py`. Unit dos mapeadores.
 2. **US-3.1** (`teams_list_chats`) + `list_chats`/`_next` — valida o mapeamento de membros e o filtro client-side cedo.
 3. **US-3.2** (`teams_read_messages`) + `list_chat_messages`/`_next` — D4/D5/D8 e a fronteira de sanitização.
-4. **US-3.3/3.5** (`teams_send_message`) + `send_chat_message` — fixa o padrão prepare/confirm + resumo + auditoria `teams.send` + D6/D10.
+4. **US-3.3/3.5** (`teams_send_message`) + `send_chat_message` + `get_chat` (resumo do prepare, A2) — fixa o padrão prepare/confirm + resumo + auditoria `teams.send` (`extra` sem `subject_hash`, A1) + D6/D10.
 5. **US-3.4** (`teams_get_or_create_one_on_one_chat`) + `create_one_on_one_chat` — D1/D3 (procurar→criar; `ok` sem token vs `pending_confirmation`).
 6. **Registo em `server.py`** (incremental, por US) + reforço de `instructions`.
 7. **Playbook** (§2.4: acrescentar a tool de obter/criar chat 1:1 + regra D9).
@@ -436,9 +444,20 @@ Correr: `python -m pytest -q` · lint: `python -m ruff check src tests`.
 ## 8. Definition-of-Done global da Fase 3
 
 - 5 US implementadas com os DoD de §3; **6 tools** registadas em `server.py` (2 read + 2×2 write) com as descrições de §2.3; `instructions` reforçadas (resolver nome a montante + chat_id + conteúdo não-confiável + criar conversa = escrita).
-- **6 métodos Graph novos** (`list_chats`, `list_chats_next`, `list_chat_messages`, `list_chat_messages_next`, `create_one_on_one_chat`, `send_chat_message`) **+ 4 mapeadores** (`_map_chat_summary`, `_map_chat_message`, `_chat_from`, `_map_chat_member`) em `client.py`; scopes `Chat.Read`/`Chat.ReadWrite` atualizados.
+- **7 métodos Graph novos** (`list_chats`, `list_chats_next`, `get_chat`, `list_chat_messages`, `list_chat_messages_next`, `create_one_on_one_chat`, `send_chat_message`) **+ 4 mapeadores** (`_map_chat_summary`, `_map_chat_message`, `_chat_from`, `_map_chat_member`) em `client.py`; scopes `Chat.Read`/`Chat.ReadWrite` atualizados.
 - FakeGraphClient estendido; E2E read + write + unit a passar; `ruff` limpo; `python -m pytest -q` verde.
-- Invariantes provados por contagem de chamadas: prepare-não-escreve (`send_chat_message`/`create_one_on_one_chat` a 0 após prepare), idempotência (replay não re-envia/re-cria), reauth graciosa (token não consumido), isolamento/TTL, chat 1:1 existente → `ok` sem token (criação a 0).
+- Invariantes provados por contagem de chamadas: prepare-não-escreve (`send_chat_message`/`create_one_on_one_chat` a 0 após prepare; o prepare de envio só faz a leitura `get_chat`), idempotência (replay não re-envia/re-cria), reauth graciosa (token não consumido), isolamento/TTL, chat 1:1 existente → `ok` sem token (criação a 0).
 - Sanitização + `content_is_untrusted` em todas as leituras (mensagens e preview); `is_system` marcado (D8).
-- Auditoria só-metadados em todas as escritas (`teams.send` com `subject_hash`+`chat_type`+`body_type`; `teams.chat_create` com `chat_type`+`is_new_chat`) — nunca texto/nomes/emails em claro.
+- Auditoria só-metadados em todas as escritas (`teams.send` com `extra={chat_type, body_type}` — **sem `subject_hash` em `extra`**, A1, preservando o hash de identidade de topo; `teams.chat_create` com `chat_type`+`is_new_chat`) — nunca texto/nomes/emails em claro.
 - Decisões D1–D11 fechadas (§1.1) e refletidas no código; playbook reconciliado (§2.4); `docs/fase-3/estado-user-stories.md` e `docs/fase-3/runbook-validacao-manual.md` criados pelo QA.
+
+---
+
+## 9. Correções da revisão do coordenador (incorporadas)
+
+A revisão crítica independente do coordenador ([revisao-coordenador.md](revisao-coordenador.md)) deu o veredicto **APROVADO COM RESSALVAS**, sem bloqueadores e com dois achados Maiores a fechar no contrato antes das escritas (US-3.3/3.4). Ambos foram **incorporados neste plano**:
+
+- **A1 — Auditoria `teams.send` não leva `subject_hash` em `extra`.** O `log_audit` já emite o `subject_hash` da *identidade do utilizador* no campo de topo e faz `fields.update(extra)`; injetar um segundo `subject_hash(chat_id)` em `extra` **sobrescreveria silenciosamente** o hash de identidade (regressão de privacidade), e o `chat_id` já é o `target` e não é PII. Corrigido em §2 (imports sem `subject_hash`), §5.8 (`extra={chat_type, body_type}`), §6.2/§6.3 (testes) e §8 (DoD). Alinhado com o precedente `email.send`.
+- **A2 — Resumo do `teams_send_message_prepare` via `get_chat(chat_id)`.** Montar o resumo de confirmação a partir de `list_chats(top=50)` perdia os detalhes (tipo de chat, participantes, domínios) para utilizadores com >50 chats — exatamente na escrita mais frequente, enfraquecendo a barreira anti-erro. Acrescentado o método de leitura `get_chat` (§2.1), usado no prepare (§3 US-3.3), com fake e testes (§6) e contagem no DoD (§8). Continua a respeitar o invariante prepare-não-escreve (é uma leitura) e degrada graciosamente se falhar.
+
+Achados Menores/Notas do coordenador (endpoint `/me/chats` vs `/chats` a validar no tenant; robustez de `_chat_from`/match 1:1 quando o membro só traz `userId`; sinalizar truncagem da listagem `_MAX_LIST_FETCH`; risco residual de retry-auth no `POST` — idêntico à Fase 1/2) ficam para tratar durante a implementação, conforme parecer.
