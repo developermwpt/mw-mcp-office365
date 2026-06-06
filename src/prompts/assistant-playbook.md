@@ -157,14 +157,18 @@ mail_reply_confirm(token=T1)              # só após aprovação
 |---|---|---|
 | `teams_list_chats` | leitura | Listar chats (1:1 e de grupo) e respetivos IDs/participantes. |
 | `teams_read_messages` | leitura | Ler mensagens de um chat pelo seu ID. |
+| `teams_get_or_create_one_on_one_chat_prepare` / `_confirm` | escrita | Obter o chat 1:1 com uma pessoa (por email já resolvido), criando-o se não existir. |
 | `teams_send_message_prepare` / `_confirm` | escrita | Enviar mensagem para um chat existente. |
 
 **Parâmetros críticos**
 - `teams_list_chats`: filtro por participante/título; devolve **IDs de chat**.
+- `teams_get_or_create_one_on_one_chat_*`: **`member_email`** (email já resolvido). Se já houver conversa 1:1, devolve `status='ok'` com o `chat_id` (sem token); senão devolve `pending_confirmation` (**iniciar conversa 1:1 = escrita confirmada**) — confirma com o utilizador antes do `_confirm`.
 - `teams_send_message_*`: **ID do chat** + corpo (texto/markdown). Confirma o chat certo (nomes parecidos são comuns).
 
+**Regra D9 (resolver nome a montante):** para "manda mensagem à X no Teams", usa SEMPRE `resolve_recipient` primeiro, CONFIRMA o email com o utilizador e só depois `teams_get_or_create_one_on_one_chat_prepare`. As tools de Teams só aceitam `chat_id`/emails já resolvidos — nunca resolvem nomes internamente.
+
 **Erros comuns e recuperação**
-- *Chat não encontrado para a pessoa* → confirma o destinatário; pode não existir chat 1:1 ainda. Se o MCP não suportar criar chat, informa o utilizador.
+- *Chat não encontrado para a pessoa* → não existe conversa 1:1 ainda: usa `teams_get_or_create_one_on_one_chat_prepare` (criar conversa 1:1 = escrita confirmada) para obter/criar o chat.
 - *Ambiguidade entre vários chats de grupo* → lista as opções e pede para escolher.
 
 ### 2.4 Ficheiros (OneDrive/SharePoint)
@@ -422,7 +426,8 @@ Inclui sempre os detalhes **load-bearing**: destinatários, reply vs reply-all, 
 | Aceitar/recusar convite | `calendar_list_events` → `calendar_respond_prepare` → [aprov] → `_confirm` |
 | Listar chats Teams | `teams_list_chats` |
 | Ler mensagens Teams | `teams_read_messages` |
-| Enviar mensagem Teams | `teams_list_chats` → `teams_send_message_prepare` → [aprov] → `_confirm` |
+| Enviar mensagem Teams a um chat existente | `teams_list_chats` → `teams_send_message_prepare` → [aprov] → `_confirm` |
+| Enviar mensagem Teams a uma pessoa (por nome) | `resolve_recipient` → [confirmar email] → `teams_get_or_create_one_on_one_chat_prepare` → [aprov se criar] → `_confirm` → `teams_send_message_prepare` → [aprov] → `_confirm` |
 | Procurar ficheiros | `files_search` / `files_list` |
 | Ler ficheiro | `files_read` |
 | Carregar ficheiro | `files_upload_prepare` → [aprov] → `files_upload_confirm` |

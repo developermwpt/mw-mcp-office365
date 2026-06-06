@@ -511,6 +511,106 @@ class GraphClient:
             json_body={"comment": comment, "sendResponse": send_response},
         )
 
+    # --- Teams: listar chats (US-3.1; D2 filtro feito na tool, client-side) ---
+    async def list_chats(self, access_token: str, *, top: int = 50) -> dict:
+        """`GET /me/chats?$expand=members,lastMessagePreview&$top={top}` — chats 1:1 e de
+        grupo do utilizador, ordenados por `lastUpdatedDateTime desc` quando suportado.
+
+        O `lastMessagePreview` exige `$expand` próprio e nem sempre vem; toleramos a sua
+        ausência (preview None — ver R6). Devolve {"chats": [_map_chat_summary...],
+        "next": data.get("@odata.nextLink")}."""
+        params = {
+            "$expand": "members,lastMessagePreview",
+            "$top": top,
+            "$orderby": "lastUpdatedDateTime desc",
+        }
+        data = await self._request(
+            "GET", "/me/chats", access_token, params=params
+        ) or {}
+        chats = [self._map_chat_summary(c) for c in data.get("value", [])]
+        return {"chats": chats, "next": data.get("@odata.nextLink")}
+
+    async def list_chats_next(self, access_token: str, next_link: str) -> dict:
+        """Segue um `@odata.nextLink` absoluto de `/me/chats`. Usado só se a tool precisar de
+        mais do que a 1ª página para satisfazer o filtro client-side (D2). Devolve
+        {"chats": [...], "next": ...}."""
+        data = await self._request("GET", next_link, access_token) or {}
+        chats = [self._map_chat_summary(c) for c in data.get("value", [])]
+        return {"chats": chats, "next": data.get("@odata.nextLink")}
+
+    async def get_chat(self, access_token: str, chat_id: str) -> dict:
+        """`GET /me/chats/{chat_id}?$expand=members` — um chat por id, com membros.
+
+        LEITURA pontual usada pelo `teams_send_message_prepare` para montar o resumo de
+        confirmação (tipo de chat + membros + domínios) de forma fiável, mesmo quando o
+        utilizador tem mais chats do que cabem numa página de `list_chats` (achado A2).
+        Devolve _map_chat_summary(data)."""
+        data = await self._request(
+            "GET", f"/me/chats/{chat_id}", access_token,
+            params={"$expand": "members"},
+        ) or {}
+        return self._map_chat_summary(data)
+
+    # --- Teams: ler mensagens de um chat (US-3.2; D4 top; D5 has_more) ---
+    async def list_chat_messages(
+        self, access_token: str, chat_id: str, *, top: int = 25
+    ) -> dict:
+        """`GET /me/chats/{chat_id}/messages?$top={top}&$orderby=createdDateTime desc` — as N
+        mensagens mais RECENTES. Inclui mensagens de sistema (messageType != message). NÃO
+        auto-pagina (D5). Devolve {"messages": [_map_chat_message...], "next": ...}."""
+        params = {"$top": top, "$orderby": "createdDateTime desc"}
+        data = await self._request(
+            "GET", f"/me/chats/{chat_id}/messages", access_token, params=params
+        ) or {}
+        messages = [self._map_chat_message(m) for m in data.get("value", [])]
+        return {"messages": messages, "next": data.get("@odata.nextLink")}
+
+    async def list_chat_messages_next(self, access_token: str, next_link: str) -> dict:
+        """Segue um `@odata.nextLink` absoluto de mensagens (mensagens mais antigas, a pedido
+        explícito — D5). Devolve {"messages": [...], "next": ...}."""
+        data = await self._request("GET", next_link, access_token) or {}
+        messages = [self._map_chat_message(m) for m in data.get("value", [])]
+        return {"messages": messages, "next": data.get("@odata.nextLink")}
+
+    # --- Teams: obter/criar chat 1:1 (D1/D3; escrita -> só no confirm) ---
+    async def create_one_on_one_chat(
+        self, access_token: str, *, member_emails: list[str]
+    ) -> dict:
+        """`POST /chats` com chatType=oneOnOne e os membros (`user@odata.bind`).
+
+        Idempotente no Graph (1:1 já existente -> devolve o existente). Devolve
+        _map_chat_summary(data). ESCRITA — só chamada no confirm de US-3.4."""
+        body = {
+            "chatType": "oneOnOne",
+            "members": [
+                {
+                    "@odata.type": "#microsoft.graph.aadUserConversationMember",
+                    "roles": ["owner"],
+                    "user@odata.bind": (
+                        f"https://graph.microsoft.com/v1.0/users('{email}')"
+                    ),
+                }
+                for email in member_emails
+            ],
+        }
+        data = await self._request(
+            "POST", "/chats", access_token, json_body=body
+        ) or {}
+        return self._map_chat_summary(data)
+
+    # --- Teams: enviar mensagem (US-3.3; D6 contentType) ---
+    async def send_chat_message(
+        self, access_token: str, chat_id: str, *, content: str, content_type: str = "text"
+    ) -> dict:
+        """`POST /me/chats/{chat_id}/messages` com body
+        {"body": {"contentType": content_type, "content": content}}. Devolve
+        _map_chat_message(data) do recurso criado. ESCRITA — só no confirm de US-3.3."""
+        body = {"body": {"contentType": content_type, "content": content}}
+        data = await self._request(
+            "POST", f"/me/chats/{chat_id}/messages", access_token, json_body=body
+        ) or {}
+        return self._map_chat_message(data)
+
     # --- núcleo HTTP ---
     async def _get(self, path: str, access_token: str) -> dict:
         """Compatibilidade Fase 0: GET simples que delega no `_request`."""
@@ -640,3 +740,60 @@ class GraphClient:
             }
         )
         return detail
+
+    # --- mapeamentos: Teams (Fase 3) ---
+    @staticmethod
+    def _map_chat_member(m: dict) -> dict:
+        """Membro de um chat — só nome + email + `aad_user_id` (minimização RGPD; nenhum
+        outro atributo de diretório). O `email` vem tipicamente em chats; quando falta,
+        o `aad_user_id` (`userId`) é o fallback de identificação."""
+        return {
+            "name": m.get("displayName"),
+            "email": m.get("email"),
+            "aad_user_id": m.get("userId"),
+        }
+
+    @classmethod
+    def _map_chat_summary(cls, c: dict) -> dict:
+        """Chat resumido (US-3.1). NÃO sanitiza o `last_message_preview` (a tool sanitiza);
+        tolera `lastMessagePreview` ausente (preview None — R6)."""
+        return {
+            "id": c.get("id"),
+            "chat_type": c.get("chatType"),
+            "topic": c.get("topic"),
+            "members": [cls._map_chat_member(m) for m in (c.get("members") or [])],
+            "last_updated": c.get("lastUpdatedDateTime"),
+            "last_message_preview": (
+                ((c.get("lastMessagePreview") or {}).get("body") or {}).get("content")
+            ),
+        }
+
+    @staticmethod
+    def _chat_from(m: dict) -> dict | None:
+        """Remetente de uma mensagem de chat -> {name, email} ou None (sistema/aplicação).
+
+        O `from.user` do Graph normalmente só traz `id` e `displayName` (o `email` costuma
+        vir a None — aceitável, é só para apresentação). Devolve None quando `from`/
+        `from.user` for nulo (mensagem de sistema ou de aplicação)."""
+        user = (m.get("from") or {}).get("user")
+        if not user:
+            return None
+        return {"name": user.get("displayName"), "email": user.get("email")}
+
+    @classmethod
+    def _map_chat_message(cls, m: dict) -> dict:
+        """Mensagem de chat (US-3.2 / send). Inclui `body` CRU (a tool sanitiza); deriva
+        `is_system` (D8) por `messageType != "message"`; cartões/anexos só como metadados
+        (D8: `attachments_count`, conteúdo NÃO interpretado)."""
+        return {
+            "id": m.get("id"),
+            "from": cls._chat_from(m),
+            "created": m.get("createdDateTime"),
+            "message_type": m.get("messageType"),
+            "is_system": (m.get("messageType") != "message"),
+            "body": {
+                "contentType": (m.get("body") or {}).get("contentType"),
+                "content": (m.get("body") or {}).get("content"),
+            },
+            "attachments_count": len(m.get("attachments") or []),
+        }

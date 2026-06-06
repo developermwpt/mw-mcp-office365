@@ -39,6 +39,14 @@ class FakeGraphClient:
         next_event_pages: list[dict] | None = None,
         event: dict | None = None,
         schedule: list[dict] | None = None,
+        # --- Teams (Fase 3) ---
+        chats: dict | None = None,
+        next_chat_pages: list[dict] | None = None,
+        chat: dict | None = None,
+        chat_messages: dict | None = None,
+        next_message_pages: list[dict] | None = None,
+        created_chat: dict | None = None,
+        sent_message: dict | None = None,
     ) -> None:
         self.calls: list[tuple[str, tuple, dict]] = []
         self._messages = messages or {"messages": [], "next": None}
@@ -64,6 +72,16 @@ class FakeGraphClient:
         self._next_event_idx = 0
         self._event = event or {"id": "evt-1", "webLink": "https://web/evt-1"}
         self._schedule = schedule if schedule is not None else []
+        # --- Teams (Fase 3) ---
+        self._chats = chats or {"chats": [], "next": None}
+        self._next_chat_pages = list(next_chat_pages or [])
+        self._next_chat_idx = 0
+        self._chat = chat or {}
+        self._chat_messages = chat_messages or {"messages": [], "next": None}
+        self._next_message_pages = list(next_message_pages or [])
+        self._next_message_idx = 0
+        self._created_chat = created_chat or {"id": "chat-novo", "chat_type": "oneOnOne"}
+        self._sent_message = sent_message or {"id": "msg-1", "created": "2026-06-06T10:00:00Z"}
 
     def _record(self, name: str, *args: Any, **kwargs: Any) -> None:
         self.calls.append((name, args, kwargs))
@@ -184,6 +202,47 @@ class FakeGraphClient:
     ) -> None:
         self._record("respond_event", access_token, event_id, response=response,
                      comment=comment, send_response=send_response)
+
+    # --- Teams: leitura (Fase 3) ---
+    async def list_chats(self, access_token, *, top=50) -> dict:
+        self._record("list_chats", access_token, top=top)
+        return self._chats
+
+    async def list_chats_next(self, access_token, next_link) -> dict:
+        self._record("list_chats_next", access_token, next_link)
+        if self._next_chat_idx < len(self._next_chat_pages):
+            page = self._next_chat_pages[self._next_chat_idx]
+            self._next_chat_idx += 1
+            return {"chats": page.get("chats", []), "next": page.get("next")}
+        return {"chats": [], "next": None}
+
+    async def get_chat(self, access_token, chat_id) -> dict:
+        self._record("get_chat", access_token, chat_id)
+        return self._chat
+
+    async def list_chat_messages(self, access_token, chat_id, *, top=25) -> dict:
+        self._record("list_chat_messages", access_token, chat_id, top=top)
+        return self._chat_messages
+
+    async def list_chat_messages_next(self, access_token, next_link) -> dict:
+        self._record("list_chat_messages_next", access_token, next_link)
+        if self._next_message_idx < len(self._next_message_pages):
+            page = self._next_message_pages[self._next_message_idx]
+            self._next_message_idx += 1
+            return {"messages": page.get("messages", []), "next": page.get("next")}
+        return {"messages": [], "next": None}
+
+    # --- Teams: escrita (Fase 3) ---
+    async def create_one_on_one_chat(self, access_token, *, member_emails) -> dict:
+        self._record("create_one_on_one_chat", access_token, member_emails=member_emails)
+        return self._created_chat
+
+    async def send_chat_message(
+        self, access_token, chat_id, *, content, content_type="text"
+    ) -> dict:
+        self._record("send_chat_message", access_token, chat_id, content=content,
+                     content_type=content_type)
+        return self._sent_message
 
     # --- contactos ---
     async def search_people(self, access_token, query, *, top=10) -> list[dict]:
