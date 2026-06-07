@@ -232,6 +232,7 @@ async def run_teams_send_message_prepare(
     chat_id: str,
     body: str,
     body_type: str = "text",
+    intended_recipient: str | None = None,
     account_id: str | None = None,
     clock: Callable[[], datetime] = _utcnow,
 ) -> dict:
@@ -240,7 +241,14 @@ async def run_teams_send_message_prepare(
     Validação antes de qualquer leitura/escrita (D6/D10). Leitura acessória best-effort via
     `get_chat(chat_id)` (A2) para montar o resumo (tipo de chat + nº participantes + domínios);
     se falhar por motivo não-auth, degrada graciosamente (resumo sem detalhes), nunca escreve.
-    Responder numa conversa = enviar no mesmo `chat_id` (D7: não há thread em chats)."""
+    Responder numa conversa = enviar no mesmo `chat_id` (D7: não há thread em chats).
+
+    US-3.6/D12 — Se `intended_recipient` for indicado, EXIGE que o `chat_id` seja um `oneOnOne`
+    cujo único outro membro (excluído o próprio) == `intended_recipient` (case-insensitive);
+    caso contrário recusa com `error` SEM emitir token (e regista auditoria
+    `teams.send_blocked`). Fail-closed: se o `get_chat` degradar e não houver
+    `intended_recipient` mantém-se o resumo degradado com token; se houver `intended_recipient`,
+    recusa (não dá para verificar o destino)."""
     if not chat_id or not body:
         return {"status": "error", "message": "Indique o chat_id e o corpo da mensagem (body)."}
     if body_type not in _VALID_BODY_TYPES:
@@ -294,6 +302,33 @@ async def run_teams_send_message_prepare(
     )
     n = len(others)
     other_emails = [m["email"] for m in others if m.get("email")]
+
+    # US-3.6/D12 — Barreira anti-fuga (B). Quando o utilizador nomeia uma pessoa, o servidor
+    # EXIGE que o destino seja o 1:1 exato com ela; nunca um grupo nem outra pessoa. Fail-closed:
+    # se o get_chat degradou (chat_type indisponível) não dá para verificar -> recusa.
+    if intended_recipient is not None:
+        target_cf = intended_recipient.casefold()
+        others_cf = [(m.get("email") or "").casefold() for m in others]
+        is_strict_one_on_one = (
+            chat_type == "oneOnOne"
+            and others_cf == [target_cf]   # ÚNICO outro membro == alvo (já exclui o próprio)
+        )
+        if not is_strict_one_on_one:
+            log_audit(
+                audit_logger, action="teams.send_blocked", subject=subject,
+                account_id=account.account_id, target=chat_id, outcome="blocked",
+                extra={"reason": "intended_recipient_mismatch", "chat_type": chat_type},
+            )
+            return {
+                "status": "error",
+                "message": (
+                    "Por segurança, não enviei a mensagem: pediu para enviar a uma pessoa "
+                    "específica, mas este chat não é a conversa 1:1 com essa pessoa (pode ser "
+                    "um grupo, outra conversa, ou não foi possível confirmar o destinatário). "
+                    "Para enviar a essa pessoa, obtenha primeiro a conversa 1:1 com "
+                    "`teams_get_or_create_one_on_one_chat_prepare` e use o `chat_id` devolvido."
+                ),
+            }
 
     if chat_type == "oneOnOne":
         # Barreira concreta: nomear a pessoa (mais útil que "1 participante" num 1:1).

@@ -536,3 +536,265 @@ async def test_send_token_de_outro_subject_rejeitado(mapping, store, config, clo
     )
     assert out["status"] == "error"
     assert gc.count("send_chat_message") == 0
+
+
+# ===================== US-3.6 — BARREIRA ANTI-FUGA (intended_recipient / D12) =====================
+#
+# A barreira corre no `prepare`: se `intended_recipient` for indicado, só emite token quando o
+# `chat_id` é o `oneOnOne` EXATO com essa pessoa (único outro membro == recipient, case-insensitive,
+# excluído o próprio). Caso contrário recusa com `status="error"`, SEM `confirmation_token`, audita
+# `teams.send_blocked`/`outcome="blocked"`, e NUNCA escreve (`send_chat_message` a 0). Fail-closed:
+# get_chat degradado (chat_type=None) com recipient -> recusa.
+
+
+def _group_with_vera() -> dict:
+    """Grupo que INCLUI a Vera + um terceiro (vetor principal de fuga: 1:1 -> grupo)."""
+    return {
+        "id": "chat-grp",
+        "chat_type": "group",
+        "topic": "Projeto X",
+        "members": [
+            {"name": "Vera", "email": "vera@empresa.pt", "aad_user_id": "u-v"},
+            {"name": "João", "email": "joao@empresa.pt", "aad_user_id": "u-j"},
+            {"name": "Eu", "email": "eu@empresa.pt", "aad_user_id": "u-eu"},
+        ],
+        "last_updated": "2026-06-06T10:00:00Z",
+        "last_message_preview": None,
+    }
+
+
+def _one_on_one_with(email: str, *, name: str = "Alvo", chat_id: str = "chat-1a1") -> dict:
+    """1:1 entre o próprio (eu@empresa.pt) e `email`."""
+    return {
+        "id": chat_id,
+        "chat_type": "oneOnOne",
+        "topic": None,
+        "members": [
+            {"name": name, "email": email, "aad_user_id": "u-x"},
+            {"name": "Eu", "email": "eu@empresa.pt", "aad_user_id": "u-eu"},
+        ],
+        "last_updated": "2026-06-06T10:00:00Z",
+        "last_message_preview": None,
+    }
+
+
+def _one_on_one_sem_email_no_alvo() -> dict:
+    """1:1 cujo OUTRO membro só tem aad_user_id (sem email) — degradação fail-closed (A5)."""
+    return {
+        "id": "chat-noemail",
+        "chat_type": "oneOnOne",
+        "topic": None,
+        "members": [
+            {"name": "Vera", "email": None, "aad_user_id": "u-v"},
+            {"name": "Eu", "email": "eu@empresa.pt", "aad_user_id": "u-eu"},
+        ],
+        "last_updated": "2026-06-06T10:00:00Z",
+        "last_message_preview": None,
+    }
+
+
+async def _prepare_send(gc, mapping, store, config, clock, **kwargs):
+    """Helper: corre o prepare de envio com o token já ligado (subj-1)."""
+    return await teams.run_teams_send_message_prepare(
+        "subj-1", mapping=mapping, plane_b=_plane_b(config, clock), graph_client=gc,
+        store=store, approval=_approval(store, clock), clock=clock, **kwargs,
+    )
+
+
+async def test_us36_c1_1a1_correto_com_recipient_emite_token(mapping, store, config, clock):
+    """C1 — 1:1 com a pessoa + intended_recipient correto -> pending_confirmation + token;
+    prepare não escreve (send_chat_message a 0)."""
+    _link(mapping, clock)
+    gc = FakeGraphClient(
+        chat=_one_on_one_with("vera@empresa.pt"), me={"userPrincipalName": "eu@empresa.pt"},
+    )
+    out = await _prepare_send(
+        gc, mapping, store, config, clock,
+        chat_id="chat-1a1", body="olá Vera", intended_recipient="vera@empresa.pt",
+    )
+    assert out["status"] == "pending_confirmation"
+    assert out["confirmation_token"]
+    assert gc.count("send_chat_message") == 0
+
+
+async def test_us36_c2_grupo_com_recipient_recusa_sem_token(mapping, store, config, clock):
+    """C2 (vetor principal) — GRUPO que inclui a pessoa + intended_recipient -> status=error,
+    SEM confirmation_token; send_chat_message a 0; mensagem orienta para o 1:1."""
+    _link(mapping, clock)
+    gc = FakeGraphClient(
+        chat=_group_with_vera(), me={"userPrincipalName": "eu@empresa.pt"},
+    )
+    out = await _prepare_send(
+        gc, mapping, store, config, clock,
+        chat_id="chat-grp", body="segredo", intended_recipient="vera@empresa.pt",
+    )
+    assert out["status"] == "error"
+    assert "confirmation_token" not in out
+    assert "teams_get_or_create_one_on_one_chat_prepare" in out["message"]
+    assert gc.count("send_chat_message") == 0
+
+
+async def test_us36_c3_1a1_com_outra_pessoa_recusa_sem_token(mapping, store, config, clock):
+    """C3 — 1:1 com OUTRA pessoa + intended_recipient (chat_id trocado de pessoa) -> error,
+    sem token, sem escrita."""
+    _link(mapping, clock)
+    gc = FakeGraphClient(
+        chat=_one_on_one_with("ana@empresa.pt", name="Ana"),
+        me={"userPrincipalName": "eu@empresa.pt"},
+    )
+    out = await _prepare_send(
+        gc, mapping, store, config, clock,
+        chat_id="chat-1a1", body="olá", intended_recipient="vera@empresa.pt",
+    )
+    assert out["status"] == "error"
+    assert "confirmation_token" not in out
+    assert gc.count("send_chat_message") == 0
+
+
+async def test_us36_c4_1a1_correto_sem_recipient_retrocompativel(mapping, store, config, clock):
+    """C4 — 1:1 correto + intended_recipient=None -> comportamento atual (token);
+    retrocompatível."""
+    _link(mapping, clock)
+    gc = FakeGraphClient(
+        chat=_one_on_one_with("vera@empresa.pt"), me={"userPrincipalName": "eu@empresa.pt"},
+    )
+    out = await _prepare_send(
+        gc, mapping, store, config, clock,
+        chat_id="chat-1a1", body="olá", intended_recipient=None,
+    )
+    assert out["status"] == "pending_confirmation"
+    assert out["confirmation_token"]
+    assert gc.count("send_chat_message") == 0
+
+
+async def test_us36_c5_grupo_sem_recipient_emite_token(mapping, store, config, clock):
+    """C5 — grupo + intended_recipient=None -> pending_confirmation (envio a grupo continua
+    possível quando NÃO se afirma um destinatário 1:1)."""
+    _link(mapping, clock)
+    gc = FakeGraphClient(
+        chat=_group_with_vera(), me={"userPrincipalName": "eu@empresa.pt"},
+    )
+    out = await _prepare_send(
+        gc, mapping, store, config, clock,
+        chat_id="chat-grp", body="olá equipa", intended_recipient=None,
+    )
+    assert out["status"] == "pending_confirmation"
+    assert out["confirmation_token"]
+    assert gc.count("send_chat_message") == 0
+
+
+async def test_us36_c6_pessoa_so_em_grupo_recusa(mapping, store, config, clock):
+    """C6 — pessoa que só existe num grupo (sem 1:1) + intended_recipient -> recusa (o caminho
+    correto é criar o 1:1 via US-3.4, nunca enviar ao grupo)."""
+    _link(mapping, clock)
+    gc = FakeGraphClient(
+        chat=_group_with_vera(), me={"userPrincipalName": "eu@empresa.pt"},
+    )
+    out = await _prepare_send(
+        gc, mapping, store, config, clock,
+        chat_id="chat-grp", body="olá Vera", intended_recipient="vera@empresa.pt",
+    )
+    assert out["status"] == "error"
+    assert "confirmation_token" not in out
+    assert gc.count("send_chat_message") == 0
+
+
+async def test_us36_c7_1a1_alvo_sem_email_recusa_fail_closed(mapping, store, config, clock):
+    """C7 — 1:1 cujo outro membro NÃO tem email (só aad_user_id) + intended_recipient ->
+    recusa (fail-closed: "" != alvo, na dúvida não envia)."""
+    _link(mapping, clock)
+    gc = FakeGraphClient(
+        chat=_one_on_one_sem_email_no_alvo(), me={"userPrincipalName": "eu@empresa.pt"},
+    )
+    out = await _prepare_send(
+        gc, mapping, store, config, clock,
+        chat_id="chat-noemail", body="olá", intended_recipient="vera@empresa.pt",
+    )
+    assert out["status"] == "error"
+    assert "confirmation_token" not in out
+    assert gc.count("send_chat_message") == 0
+
+
+async def test_us36_c8_recipient_case_insensitive_aceita(mapping, store, config, clock):
+    """C8 — intended_recipient com maiúsculas diferentes do email do membro -> aceita no 1:1
+    correto (comparação case-insensitive; o próprio em members não quebra o match)."""
+    _link(mapping, clock)
+    gc = FakeGraphClient(
+        chat=_one_on_one_with("vera@empresa.pt"), me={"userPrincipalName": "eu@empresa.pt"},
+    )
+    out = await _prepare_send(
+        gc, mapping, store, config, clock,
+        chat_id="chat-1a1", body="olá", intended_recipient="VERA@EMPRESA.PT",
+    )
+    assert out["status"] == "pending_confirmation"
+    assert out["confirmation_token"]
+    assert gc.count("send_chat_message") == 0
+
+
+async def test_us36_c10_get_chat_degradado_com_recipient_recusa(mapping, store, config, clock):
+    """C10 (fail-closed) — get_chat degradado (não-auth) + intended_recipient -> chat_type=None,
+    não verificável -> recusa, sem token, send_chat_message a 0."""
+    _link(mapping, clock)
+    gc = FakeGraphClient(
+        chat=_one_on_one_with("vera@empresa.pt"),
+        me={"userPrincipalName": "eu@empresa.pt"},
+        auth_fail={"get_chat": 99},
+    )
+    out = await _prepare_send(
+        gc, mapping, store, config, clock,
+        chat_id="chat-1a1", body="olá", intended_recipient="vera@empresa.pt",
+    )
+    assert out["status"] == "error"
+    assert "confirmation_token" not in out
+    assert gc.count("send_chat_message") == 0
+
+
+async def test_us36_c10_contraste_get_chat_degradado_sem_recipient_emite_token(
+    mapping, store, config, clock
+):
+    """C10 (contraste) — MESMO get_chat degradado mas SEM intended_recipient -> mantém o resumo
+    degradado com token (comportamento atual; só a barreira é fail-closed)."""
+    _link(mapping, clock)
+    gc = FakeGraphClient(
+        chat=_one_on_one_with("vera@empresa.pt"),
+        me={"userPrincipalName": "eu@empresa.pt"},
+        auth_fail={"get_chat": 99},
+    )
+    out = await _prepare_send(
+        gc, mapping, store, config, clock,
+        chat_id="chat-1a1", body="olá", intended_recipient=None,
+    )
+    assert out["status"] == "pending_confirmation"
+    assert out["confirmation_token"]
+    assert "indisponíveis" in out["summary"]
+
+
+async def test_us36_c11_recusa_audita_blocked_sem_pii(mapping, store, config, clock, caplog):
+    """C11 (auditoria) — numa recusa há UM evento audit com action='teams.send_blocked',
+    outcome='blocked', target=chat_id, extra.reason + extra.chat_type; SEM o email/nome em claro
+    e SEM um segundo subject_hash (o de identidade está presente uma única vez)."""
+    _link(mapping, clock)
+    gc = FakeGraphClient(
+        chat=_group_with_vera(), me={"userPrincipalName": "eu@empresa.pt"},
+    )
+    with caplog.at_level(logging.INFO, logger="mcp_o365.audit"):
+        out = await _prepare_send(
+            gc, mapping, store, config, clock,
+            chat_id="chat-grp", body="segredo", intended_recipient="vera@empresa.pt",
+        )
+    assert out["status"] == "error"
+    assert "confirmation_token" not in out
+    blocked = [e for e in _audit_events(caplog) if e["action"] == "teams.send_blocked"]
+    assert len(blocked) == 1
+    ev = blocked[0]
+    assert ev["outcome"] == "blocked"
+    assert ev["target"] == "chat-grp"
+    assert ev["reason"] == "intended_recipient_mismatch"
+    assert ev["chat_type"] == "group"
+    # subject_hash de identidade presente (uma só vez; não sobrescrito por extra).
+    assert ev["subject_hash"]
+    # Sem PII em claro: nem o email/nome do alvo, nem o texto da mensagem.
+    blob = str(ev)
+    assert "vera@empresa.pt" not in blob.lower()
+    assert "vera" not in blob.lower()
+    assert "segredo" not in blob

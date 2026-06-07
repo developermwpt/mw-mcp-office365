@@ -1,7 +1,8 @@
 # Fase 3 — Teams (chats): runbook de validação manual (tenant/VPS reais)
 
 > Os testes automáticos (Graph/Entra mockados) cobrem toda a lógica e estão **a passar**
-> (254 testes, 43 da Fase 3). Este runbook valida o comportamento real contra o Microsoft Graph
+> (266 testes, 55 da Fase 3, incl. os 11 da barreira US-3.6). Este runbook valida o comportamento
+> real contra o Microsoft Graph
 > no tenant da Mobiweb, com o servidor MCP no VPS. Cada passo é executado pelo assistente
 > (Claude) ligado ao MCP; o validador confirma o resultado no Microsoft Teams.
 
@@ -83,6 +84,34 @@ os scopes de Teams.
    'html'"), sem token.
 5. **Idempotência:** reapresentar o mesmo `confirmation_token` → resposta `idempotent_replay` e
    **não** envia uma segunda mensagem (anti-duplicação).
+
+## 3-bis. US-3.6 — Barreira anti-fuga: envio a contacto nomeado é estritamente 1:1 (D12)
+
+> Medida de segurança crítica: quando o utilizador nomeia uma PESSOA ("manda à Vera"), o
+> servidor recusa o envio se o `chat_id` não for a conversa 1:1 exata com ela — nunca um grupo
+> nem outra conversa. O assistente deve passar `intended_recipient=<email da pessoa>` ao
+> `teams_send_message_prepare` sempre que o pedido nomear uma pessoa.
+
+1. **Caminho feliz (1:1 correto):** *"Manda à [Vera] no Teams 'Olá, tudo bem?'"*.
+   - O assistente resolve a Vera → obtém o `chat_id` 1:1 (US-3.4) → `teams_send_message_prepare`
+     com `intended_recipient=<email da Vera>`.
+   - **Confirmar:** o prepare devolve **token** e o resumo **NOMEIA a Vera**; o confirm envia e a
+     Vera recebe a mensagem.
+2. **Vetor de fuga bloqueado (grupo com a pessoa):** forçar o cenário de risco — pedir para
+   enviar **à Vera** mas apontando (ou deixando o assistente escolher) um `chat_id` de um **grupo
+   que inclui a Vera e terceiros**, com `intended_recipient=<email da Vera>`.
+   - **Confirmar:** o envio é **RECUSADO** com a mensagem de segurança ("…este chat não é a
+     conversa 1:1 com essa pessoa… obtenha primeiro a conversa 1:1 com
+     `teams_get_or_create_one_on_one_chat_prepare`…"); **nenhuma** mensagem chega ao grupo
+     (verificar no Teams que os terceiros NÃO foram notificados) e **não** há token.
+   - **Auditoria (logs do VPS):** confirmar um `event=audit` com `action="teams.send_blocked"`,
+     `outcome="blocked"`, `target=<chat_id do grupo>`, `extra={reason, chat_type}` — **sem** o
+     email/nome da Vera nem o texto da mensagem em claro.
+3. **1:1 com outra pessoa (chat trocado):** apontar o `chat_id` do 1:1 com **outra** pessoa mas
+   `intended_recipient=<email da Vera>` → **recusa** (defende contra `chat_id` trocado de pessoa).
+4. **Envio a grupo legítimo continua a funcionar:** *"Manda no grupo [Projeto X] …"* **sem**
+   nomear uma pessoa (sem `intended_recipient`) → o envio ao grupo procede normalmente
+   (prepare com token + confirm). A barreira só atua quando se afirma um destinatário 1:1.
 
 ## 4. US-3.4 — Iniciar conversa 1:1 por nome (obter/criar)
 
