@@ -100,20 +100,27 @@ def test_chat_from_aplicacao_e_nulo():
 
 
 @respx.mock
-async def test_list_chats_monta_expand_top_orderby():
+async def test_list_chats_monta_expand_top_sem_orderby_e_ordena_client_side():
+    # Regressão: /me/chats NÃO suporta $orderby (Graph 400 BadRequest). Confirmamos
+    # que NÃO o enviamos e que a ordenação por last_updated desc é feita client-side.
     route = respx.get(f"{BASE}/me/chats").mock(
         return_value=httpx.Response(
             200,
-            json={"value": [{"id": "chat-1", "chatType": "oneOnOne"}],
-                  "@odata.nextLink": "https://next-chats"},
+            json={"value": [
+                {"id": "chat-antigo", "chatType": "oneOnOne",
+                 "lastUpdatedDateTime": "2026-06-01T10:00:00Z"},
+                {"id": "chat-recente", "chatType": "group",
+                 "lastUpdatedDateTime": "2026-06-06T10:00:00Z"},
+            ], "@odata.nextLink": "https://next-chats"},
         )
     )
     out = await _client().list_chats("tok", top=50)
     url = str(route.calls.last.request.url)
     assert "members" in url and "lastMessagePreview" in url
     assert "%24top=50" in url or "$top=50" in url
-    assert "lastUpdatedDateTime" in url
-    assert out["chats"][0]["id"] == "chat-1"
+    assert "orderby" not in url.lower() and "lastUpdatedDateTime" not in url
+    # ordenado desc client-side: o mais recente primeiro
+    assert [c["id"] for c in out["chats"]] == ["chat-recente", "chat-antigo"]
     assert out["next"] == "https://next-chats"
 
 
@@ -134,19 +141,25 @@ async def test_get_chat_monta_expand_members():
 
 
 @respx.mock
-async def test_list_chat_messages_monta_top_orderby():
+async def test_list_chat_messages_monta_top_sem_orderby_e_ordena_client_side():
+    # Regressão: /chats/{id}/messages NÃO suporta $orderby; garantimos a ordem
+    # (createdDateTime desc) client-side em vez de a pedir ao Graph.
     route = respx.get(f"{BASE}/me/chats/chat-1/messages").mock(
         return_value=httpx.Response(
             200,
-            json={"value": [{"id": "m-1", "messageType": "message"}],
-                  "@odata.nextLink": "https://next-msgs"},
+            json={"value": [
+                {"id": "m-antiga", "messageType": "message",
+                 "createdDateTime": "2026-06-01T09:00:00Z"},
+                {"id": "m-recente", "messageType": "message",
+                 "createdDateTime": "2026-06-06T09:00:00Z"},
+            ], "@odata.nextLink": "https://next-msgs"},
         )
     )
     out = await _client().list_chat_messages("tok", "chat-1", top=25)
     url = str(route.calls.last.request.url)
     assert "%24top=25" in url or "$top=25" in url
-    assert "createdDateTime" in url
-    assert out["messages"][0]["id"] == "m-1"
+    assert "orderby" not in url.lower() and "createdDateTime" not in url
+    assert [m["id"] for m in out["messages"]] == ["m-recente", "m-antiga"]
     assert out["next"] == "https://next-msgs"
 
 

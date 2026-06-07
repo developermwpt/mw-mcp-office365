@@ -514,20 +514,22 @@ class GraphClient:
     # --- Teams: listar chats (US-3.1; D2 filtro feito na tool, client-side) ---
     async def list_chats(self, access_token: str, *, top: int = 50) -> dict:
         """`GET /me/chats?$expand=members,lastMessagePreview&$top={top}` — chats 1:1 e de
-        grupo do utilizador, ordenados por `lastUpdatedDateTime desc` quando suportado.
+        grupo do utilizador, ordenados por `lastUpdatedDateTime desc` (client-side).
 
-        O `lastMessagePreview` exige `$expand` próprio e nem sempre vem; toleramos a sua
-        ausência (preview None — ver R6). Devolve {"chats": [_map_chat_summary...],
-        "next": data.get("@odata.nextLink")}."""
+        NOTA Graph: `/me/chats` NÃO suporta `$orderby` (devolve 400 BadRequest
+        "QueryOptions to order by 'lastUpdatedDateTime' is not supported"). Ordenamos por
+        `last_updated` desc do nosso lado. O `lastMessagePreview` exige `$expand` próprio e
+        nem sempre vem; toleramos a sua ausência (preview None — ver R6). Devolve
+        {"chats": [_map_chat_summary...], "next": data.get("@odata.nextLink")}."""
         params = {
             "$expand": "members,lastMessagePreview",
             "$top": top,
-            "$orderby": "lastUpdatedDateTime desc",
         }
         data = await self._request(
             "GET", "/me/chats", access_token, params=params
         ) or {}
         chats = [self._map_chat_summary(c) for c in data.get("value", [])]
+        chats.sort(key=lambda c: c.get("last_updated") or "", reverse=True)
         return {"chats": chats, "next": data.get("@odata.nextLink")}
 
     async def list_chats_next(self, access_token: str, next_link: str) -> dict:
@@ -536,6 +538,7 @@ class GraphClient:
         {"chats": [...], "next": ...}."""
         data = await self._request("GET", next_link, access_token) or {}
         chats = [self._map_chat_summary(c) for c in data.get("value", [])]
+        chats.sort(key=lambda c: c.get("last_updated") or "", reverse=True)
         return {"chats": chats, "next": data.get("@odata.nextLink")}
 
     async def get_chat(self, access_token: str, chat_id: str) -> dict:
@@ -555,14 +558,18 @@ class GraphClient:
     async def list_chat_messages(
         self, access_token: str, chat_id: str, *, top: int = 25
     ) -> dict:
-        """`GET /me/chats/{chat_id}/messages?$top={top}&$orderby=createdDateTime desc` — as N
-        mensagens mais RECENTES. Inclui mensagens de sistema (messageType != message). NÃO
-        auto-pagina (D5). Devolve {"messages": [_map_chat_message...], "next": ...}."""
-        params = {"$top": top, "$orderby": "createdDateTime desc"}
+        """`GET /me/chats/{chat_id}/messages?$top={top}` — as N mensagens mais RECENTES.
+        Inclui mensagens de sistema (messageType != message). NÃO auto-pagina (D5).
+
+        NOTA Graph: `/chats/{id}/messages` NÃO suporta `$orderby`; já devolve por
+        `createdDateTime` desc por defeito, mas garantimos a ordem client-side. Devolve
+        {"messages": [_map_chat_message...], "next": ...}."""
+        params = {"$top": top}
         data = await self._request(
             "GET", f"/me/chats/{chat_id}/messages", access_token, params=params
         ) or {}
         messages = [self._map_chat_message(m) for m in data.get("value", [])]
+        messages.sort(key=lambda m: m.get("created") or "", reverse=True)
         return {"messages": messages, "next": data.get("@odata.nextLink")}
 
     async def list_chat_messages_next(self, access_token: str, next_link: str) -> dict:
@@ -570,6 +577,7 @@ class GraphClient:
         explícito — D5). Devolve {"messages": [...], "next": ...}."""
         data = await self._request("GET", next_link, access_token) or {}
         messages = [self._map_chat_message(m) for m in data.get("value", [])]
+        messages.sort(key=lambda m: m.get("created") or "", reverse=True)
         return {"messages": messages, "next": data.get("@odata.nextLink")}
 
     # --- Teams: obter/criar chat 1:1 (D1/D3; escrita -> só no confirm) ---
