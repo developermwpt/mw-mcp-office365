@@ -15,7 +15,9 @@ from dataclasses import dataclass
 from .features import EmailSignature, extract_signature
 
 # Ações de email cujo comportamento é aprendível.
-_LEARNABLE_ACTIONS = {"move", "archive", "reply", "reply_all", "forward", "delete", "send"}
+_LEARNABLE_ACTIONS = {
+    "move", "archive", "reply", "reply_all", "forward", "delete", "send", "schedule",
+}
 
 
 @dataclass(frozen=True)

@@ -210,3 +210,104 @@ async def test_upload_attachment_bytes_erro_levanta_grapherror():
         raise AssertionError("devia ter levantado GraphError")
     except GraphError:
         pass
+
+
+# ==================== US-1.9/1.10/1.11 — AGENDAMENTO ====================
+
+
+@respx.mock
+async def test_get_message_com_expand_expoe_extended_property():
+    """US-1.11/P7 — get_message(expand=...) propaga $expand e expõe
+    singleValueExtendedProperties no resultado."""
+    route = respx.get(f"{BASE}/me/messages/d1").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "id": "d1", "subject": "Agendado",
+                "singleValueExtendedProperties": [
+                    {"id": "SystemTime 0x3FEF", "value": "2026-06-10T09:00:00Z"}
+                ],
+            },
+        )
+    )
+    gc = _client()
+    msg = await gc.get_message(
+        "tok", "d1",
+        expand="singleValueExtendedProperties($filter=id eq 'SystemTime 0x3FEF')",
+    )
+    url = str(route.calls.last.request.url)
+    assert "%24expand=" in url or "$expand=" in url
+    assert msg["singleValueExtendedProperties"][0]["value"] == "2026-06-10T09:00:00Z"
+
+
+@respx.mock
+async def test_get_message_sem_expand_retrocompativel():
+    """Sem expand, o get_message comporta-se como antes (sem $expand, sem a coleção)."""
+    route = respx.get(f"{BASE}/me/messages/m1").mock(
+        return_value=httpx.Response(
+            200, json={"id": "m1", "subject": "Normal"}
+        )
+    )
+    gc = _client()
+    msg = await gc.get_message("tok", "m1")
+    url = str(route.calls.last.request.url)
+    assert "expand" not in url
+    assert "singleValueExtendedProperties" not in msg
+
+
+@respx.mock
+async def test_list_deferred_drafts_query_filter_expand_select():
+    """US-1.10 — list_deferred_drafts monta $filter (presença), $expand (valor), $select e
+    $top sobre /me/mailFolders/drafts/messages; mapeia os rascunhos."""
+    route = respx.get(f"{BASE}/me/mailFolders/drafts/messages").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "value": [
+                    {
+                        "id": "d1", "subject": "Agendado",
+                        "toRecipients": [
+                            {"emailAddress": {"address": "a@mobiweb.pt"}},
+                            {"emailAddress": {"address": "b@empresa.com"}},
+                        ],
+                        "singleValueExtendedProperties": [
+                            {"id": "SystemTime 0x3FEF", "value": "2026-06-10T09:00:00Z"}
+                        ],
+                    }
+                ],
+                "@odata.nextLink": "https://next-drafts",
+            },
+        )
+    )
+    gc = _client()
+    out = await gc.list_deferred_drafts("tok", prop_id="SystemTime 0x3FEF", top=25)
+
+    url = str(route.calls.last.request.url)
+    # $filter testa a PRESENÇA da propriedade; $expand traz o valor; $select minimiza.
+    assert "any(ep" in url or "any%28ep" in url
+    assert "SystemTime+0x3FEF" in url or "SystemTime%200x3FEF" in url
+    assert "%24expand=" in url or "$expand=" in url
+    assert "%24top=25" in url or "$top=25" in url
+
+    assert out["next"] == "https://next-drafts"
+    draft = out["drafts"][0]
+    assert draft["id"] == "d1"
+    assert draft["subject"] == "Agendado"
+    assert draft["to"] == ["a@mobiweb.pt", "b@empresa.com"]
+    assert draft["deferred_send_at"] == "2026-06-10T09:00:00Z"
+
+
+@respx.mock
+async def test_list_deferred_drafts_sem_prop_mapeia_none():
+    """O mapeamento devolve deferred_send_at=None quando a prop não está presente."""
+    respx.get(f"{BASE}/me/mailFolders/drafts/messages").mock(
+        return_value=httpx.Response(
+            200,
+            json={"value": [{"id": "d2", "subject": "Sem prop", "toRecipients": []}]},
+        )
+    )
+    gc = _client()
+    out = await gc.list_deferred_drafts("tok", prop_id="SystemTime 0x3FEF")
+    assert out["drafts"][0]["deferred_send_at"] is None
+    assert out["drafts"][0]["to"] == []
+    assert out["next"] is None

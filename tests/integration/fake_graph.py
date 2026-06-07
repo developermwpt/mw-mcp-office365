@@ -47,6 +47,8 @@ class FakeGraphClient:
         next_message_pages: list[dict] | None = None,
         created_chat: dict | None = None,
         sent_message: dict | None = None,
+        # --- agendamento de envio (US-1.9/1.10/1.11) ---
+        deferred_drafts: dict | None = None,
     ) -> None:
         self.calls: list[tuple[str, tuple, dict]] = []
         self._messages = messages or {"messages": [], "next": None}
@@ -82,6 +84,10 @@ class FakeGraphClient:
         self._next_message_idx = 0
         self._created_chat = created_chat or {"id": "chat-novo", "chat_type": "oneOnOne"}
         self._sent_message = sent_message or {"id": "msg-1", "created": "2026-06-06T10:00:00Z"}
+        # --- agendamento de envio (US-1.9/1.10/1.11) ---
+        # Já no formato mapeado pela tool: {"drafts": [{"id","subject","to":[...],
+        # "deferred_send_at":"...Z"}], "next": None}.
+        self._deferred_drafts = deferred_drafts or {"drafts": [], "next": None}
 
     def _record(self, name: str, *args: Any, **kwargs: Any) -> None:
         self.calls.append((name, args, kwargs))
@@ -273,3 +279,8 @@ class FakeGraphClient:
 
     async def send_draft(self, access_token, message_id) -> None:
         self._record("send_draft", access_token, message_id)
+
+    # --- agendamento de envio (US-1.10): listar rascunhos diferidos ---
+    async def list_deferred_drafts(self, access_token, *, prop_id, top=50) -> dict:
+        self._record("list_deferred_drafts", access_token, prop_id=prop_id, top=top)
+        return self._deferred_drafts
