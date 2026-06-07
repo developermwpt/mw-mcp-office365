@@ -68,11 +68,27 @@ def _group_chat() -> dict:
 # ============================ US-3.3 / US-3.5 — ENVIAR ============================
 
 
+def _one_on_one_chat() -> dict:
+    # 1:1 mapeado: o próprio (eu@mobiweb.pt) + a destinatária.
+    return {
+        "id": "chat-11",
+        "chat_type": "oneOnOne",
+        "topic": None,
+        "members": [
+            {"name": "Vera Martins", "email": "vera.martins@mobiweb.pt", "aad_user_id": "u-v"},
+            {"name": "Eu", "email": "eu@mobiweb.pt", "aad_user_id": "u-eu"},
+        ],
+        "last_updated": "2026-06-06T10:00:00Z",
+        "last_message_preview": None,
+    }
+
+
 async def test_send_prepare_le_get_chat_nao_escreve(mapping, store, config, clock):
-    """US-3.3 — prepare lê via get_chat (count=1, A2) e NÃO envia (send a 0). Resumo declara
-    tipo de chat, N participantes, domínios e formato."""
+    """US-3.3 — prepare lê via get_chat (count=1, A2) e NÃO envia (send a 0). Num GRUPO o
+    resumo declara N participantes EXCLUINDO o próprio (recipients_count semântico) + domínios."""
     _link(mapping, clock)
-    gc = FakeGraphClient(chat=_group_chat())
+    # me == "Eu" do grupo -> o emissor é excluído da contagem (3 membros -> 2 destinatários).
+    gc = FakeGraphClient(chat=_group_chat(), me={"userPrincipalName": "eu@mobiweb.pt"})
     prepared = await teams.run_teams_send_message_prepare(
         "subj-1", mapping=mapping, plane_b=_plane_b(config, clock), graph_client=gc,
         store=store, approval=_approval(store, clock), chat_id="chat-22",
@@ -80,13 +96,35 @@ async def test_send_prepare_le_get_chat_nao_escreve(mapping, store, config, cloc
     )
     assert prepared["status"] == "pending_confirmation"
     assert prepared["operation"] == "teams.send"
-    assert prepared["recipients_count"] == 3
-    assert "de grupo" in prepared["summary"]
-    assert "3 participante(s)" in prepared["summary"]
+    # Emissor excluído: 3 membros - o próprio = 2 destinatários.
+    assert prepared["recipients_count"] == 2
+    assert "grupo" in prepared["summary"]
+    assert "2 participante(s)" in prepared["summary"]
+    assert "Projeto Moomenti" in prepared["summary"]
     assert "mobiweb.pt" in prepared["summary"] and "cliente.com" in prepared["summary"]
     assert "formato: text" in prepared["summary"]
     # A2: prepare lê via get_chat, NÃO envia.
     assert gc.count("get_chat") == 1
+    assert gc.count("send_chat_message") == 0
+
+
+async def test_send_prepare_1a1_nomeia_destinatario_e_conta_1(mapping, store, config, clock):
+    """US-3.3/3.5 — num 1:1 o emissor é excluído (recipients_count=1) e o resumo NOMEIA a
+    pessoa (barreira concreta), em vez de contar participantes."""
+    _link(mapping, clock)
+    gc = FakeGraphClient(
+        chat=_one_on_one_chat(), me={"userPrincipalName": "eu@mobiweb.pt"}
+    )
+    prepared = await teams.run_teams_send_message_prepare(
+        "subj-1", mapping=mapping, plane_b=_plane_b(config, clock), graph_client=gc,
+        store=store, approval=_approval(store, clock), chat_id="chat-11",
+        body="olá Vera", clock=clock,
+    )
+    assert prepared["status"] == "pending_confirmation"
+    assert prepared["recipients_count"] == 1
+    assert "Vera Martins" in prepared["summary"]
+    assert "vera.martins@mobiweb.pt" in prepared["summary"]
+    assert "participante(s)" not in prepared["summary"]  # 1:1 nomeia, não conta
     assert gc.count("send_chat_message") == 0
 
 
@@ -165,7 +203,10 @@ async def test_send_confirm_envia_e_audita_sem_subject_hash_em_extra(
     """US-3.3 — confirm envia 1× e audita teams.send com extra={chat_type, body_type}, SEM
     subject_hash em extra (A1); o subject_hash de IDENTIDADE (topo) continua presente."""
     _link(mapping, clock)
-    gc = FakeGraphClient(chat=_group_chat(), sent_message={"id": "msg-99"})
+    gc = FakeGraphClient(
+        chat=_group_chat(), sent_message={"id": "msg-99"},
+        me={"userPrincipalName": "eu@mobiweb.pt"},
+    )
     approval = _approval(store, clock)
     pb = _plane_b(config, clock)
     prepared = await teams.run_teams_send_message_prepare(
@@ -189,7 +230,7 @@ async def test_send_confirm_envia_e_audita_sem_subject_hash_em_extra(
     audit = next(e for e in _audit_events(caplog) if e["action"] == "teams.send")
     assert audit["outcome"] == "success"
     assert audit["target"] == "chat-22"
-    assert audit["recipients_count"] == 3
+    assert audit["recipients_count"] == 2  # emissor excluído (3 membros - o próprio)
     assert audit["chat_type"] == "group"
     assert audit["body_type"] == "text"
     # subject_hash de identidade presente (topo) e não foi sobrescrito por extra.
@@ -272,14 +313,16 @@ async def test_us35_responder_reusa_send_no_mesmo_chat(mapping, store, config, c
         ],
         "last_updated": "2026-06-06T10:00:00Z", "last_message_preview": None,
     }
-    gc = FakeGraphClient(chat=one_on_one)
+    gc = FakeGraphClient(chat=one_on_one, me={"userPrincipalName": "eu@mobiweb.pt"})
     approval = _approval(store, clock)
     pb = _plane_b(config, clock)
     prepared = await teams.run_teams_send_message_prepare(
         "subj-1", mapping=mapping, plane_b=pb, graph_client=gc, store=store,
         approval=approval, chat_id="chat-11", body="resposta", clock=clock,
     )
-    assert "1:1" in prepared["summary"]
+    # 1:1 nomeia a pessoa (emissor excluído) e conta 1 destinatário.
+    assert "Ana" in prepared["summary"]
+    assert prepared["recipients_count"] == 1
     await teams.run_teams_send_message_confirm(
         "subj-1", mapping=mapping, plane_b=pb, graph_client=gc, store=store,
         approval=approval, confirmation_token=prepared["confirmation_token"], clock=clock,

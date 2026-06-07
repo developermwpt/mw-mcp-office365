@@ -86,11 +86,6 @@ def _sanitize_message(message: dict) -> dict:
     return message
 
 
-def _chat_type_label(chat_type: str | None) -> str:
-    """Rótulo PT do tipo de chat para o resumo de confirmação."""
-    return "1:1" if chat_type == "oneOnOne" else "de grupo"
-
-
 # ============================ LEITURA (sem aprovação) ============================
 
 
@@ -279,12 +274,39 @@ async def run_teams_send_message_prepare(
 
     members = chat.get("members") or []
     chat_type = chat.get("chat_type")
-    n = len(members)
-    member_emails = [m["email"] for m in members if m.get("email")]
-    if chat_type:
+
+    # O emissor NÃO é destinatário da própria mensagem: excluímo-lo da contagem para que
+    # `recipients_count` (que também alimenta a auditoria, §6) seja semanticamente correto.
+    # Resolução do próprio email best-effort com o token já obtido (como o get_chat acima:
+    # NÃO passa por call_graph para não forçar refresh). Falha -> não exclui (degradação
+    # segura: no pior caso conta a mais, nunca a menos).
+    own_email: str | None = None
+    if members:
+        try:
+            me = await graph_client.me(token) or {}
+            own_email = me.get("userPrincipalName")
+        except (UpstreamAuthError, ReauthRequired):
+            own_email = None
+    own_cf = (own_email or "").casefold()
+    others = (
+        [m for m in members if (m.get("email") or "").casefold() != own_cf]
+        if own_cf else list(members)
+    )
+    n = len(others)
+    other_emails = [m["email"] for m in others if m.get("email")]
+
+    if chat_type == "oneOnOne":
+        # Barreira concreta: nomear a pessoa (mais útil que "1 participante" num 1:1).
+        rec = others[0] if others else {}
+        who = rec.get("name") or rec.get("email") or "destinatário"
+        email_part = f" ({rec['email']})" if rec.get("name") and rec.get("email") else ""
+        summary = f"Enviar mensagem a {who}{email_part} [formato: {body_type}]."
+    elif chat_type:
+        topic = chat.get("topic")
+        topic_part = f' "{topic}"' if topic else ""
         summary = (
-            f"Enviar mensagem no chat {_chat_type_label(chat_type)} com {n} participante(s) "
-            f"(domínios: {', '.join(_domains(member_emails)) or 'n/d'}) [formato: {body_type}]."
+            f"Enviar mensagem no grupo{topic_part} com {n} participante(s) "
+            f"(domínios: {', '.join(_domains(other_emails)) or 'n/d'}) [formato: {body_type}]."
         )
     else:
         # get_chat degradou (best-effort): resumo sem detalhes do chat, mas ainda emite token.

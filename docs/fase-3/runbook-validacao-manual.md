@@ -62,16 +62,19 @@ os scopes de Teams.
 
 1. **Chat de grupo:** *"Manda 'Bom dia, equipa' no grupo [Projeto X]"* (usar o `chat_id` do
    grupo).
-   - **prepare:** o resumo declara **"Enviar mensagem no chat de grupo com N participante(s)
-     (domínios: …) [formato: text]"** e **não envia** (verificar que a mensagem NÃO aparece
-     ainda no Teams). Confirmar que **N e os domínios batem certo** com o grupo (é a barreira
-     anti-erro — "enviei para o grupo certo?").
+   - **prepare:** o resumo declara **"Enviar mensagem no grupo \"[tópico]\" com N
+     participante(s) (domínios: …) [formato: text]"** e **não envia** (verificar que a mensagem
+     NÃO aparece ainda no Teams). Confirmar que **N e os domínios batem certo** com o grupo (é a
+     barreira anti-erro — "enviei para o grupo certo?"). **N exclui o próprio** (emissor não é
+     destinatário): num grupo de 3 membros incluindo-te, N = 2.
    - **confirm:** a mensagem aparece no chat e os participantes são **notificados** pelo Teams.
    - **Verificação A3:** confirmar que o `POST` sob `/me/chats/...` foi aceite (sem erro de
      endpoint).
 2. **Chat 1:1, formato HTML:** *"Manda à [Vera] uma mensagem em **negrito** a dizer …"* →
    `body_type=html`.
-   - **prepare:** o resumo diz **"…chat 1:1 com 1 participante(s) … [formato: html]"**.
+   - **prepare:** num 1:1 o resumo **NOMEIA a pessoa** (barreira concreta), p.ex. **"Enviar
+     mensagem a Vera Martins (vera.martins@mobiweb.pt) [formato: html]"** — `recipients_count=1`
+     (o próprio está excluído), sem "participante(s)".
    - **confirm:** a mensagem chega formatada.
 3. **Mensagem demasiado longa (D10):** pedir o envio de um texto com mais de ~28000 caracteres →
    o assistente devolve **erro orientador** ("Mensagem demasiado longa … Divida em partes"),
