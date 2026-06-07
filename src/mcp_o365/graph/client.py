@@ -153,14 +153,28 @@ class GraphClient:
         return {"messages": messages, "next": data.get("@odata.nextLink")}
 
     async def get_message(
-        self, access_token: str, message_id: str, *, select: str | None = None
+        self,
+        access_token: str,
+        message_id: str,
+        *,
+        select: str | None = None,
+        expand: str | None = None,
     ) -> dict:
-        """`GET /me/messages/{id}` — devolve a mensagem completa (com corpo)."""
-        params = {"$select": select} if select else None
+        """`GET /me/messages/{id}` — devolve a mensagem completa (com corpo).
+
+        `expand` (opcional) propaga-se como `$expand` — usado pelo cancelamento de envios
+        agendados (US-1.11) para trazer a extended property `singleValueExtendedProperties`
+        do envio diferido. Sem `expand`, o comportamento é idêntico ao anterior
+        (retrocompatível)."""
+        params: dict[str, Any] = {}
+        if select:
+            params["$select"] = select
+        if expand:
+            params["$expand"] = expand
         data = await self._request(
-            "GET", f"/me/messages/{message_id}", access_token, params=params
+            "GET", f"/me/messages/{message_id}", access_token, params=(params or None)
         ) or {}
-        return {
+        result = {
             "id": data.get("id"),
             "subject": data.get("subject"),
             "from": self._addr(data.get("from")),
@@ -173,6 +187,10 @@ class GraphClient:
             },
             "hasAttachments": data.get("hasAttachments", False),
         }
+        # P7: expor a extended property expandida (envio diferido) para o cancel_prepare.
+        if "singleValueExtendedProperties" in data:
+            result["singleValueExtendedProperties"] = data["singleValueExtendedProperties"]
+        return result
 
     async def list_attachments(
         self, access_token: str, message_id: str
@@ -208,6 +226,45 @@ class GraphClient:
             "size": data.get("size"),
             "isInline": data.get("isInline", False),
             "contentBytes": data.get("contentBytes"),
+        }
+
+    async def list_deferred_drafts(
+        self, access_token: str, *, prop_id: str, top: int = 50
+    ) -> dict:
+        """`GET /me/mailFolders/drafts/messages` filtrando rascunhos com a extended property
+        `prop_id` (PidTagDeferredSendTime) e expandindo o seu valor (hora de envio diferido).
+
+        O `$filter` testa só a PRESENÇA da propriedade (comparar a data por `ep/value` não é
+        fiável em todos os tenants — gate de validação manual US-1.10); o "ainda futuro" é
+        filtrado client-side na tool. Devolve {"drafts": [...], "next": @odata.nextLink}."""
+        ep_filter = f"singleValueExtendedProperties/any(ep: ep/id eq '{prop_id}')"
+        ep_expand = f"singleValueExtendedProperties($filter=id eq '{prop_id}')"
+        params = {
+            "$filter": ep_filter,
+            "$expand": ep_expand,
+            "$select": "id,subject,toRecipients",
+            "$top": top,
+        }
+        data = await self._request(
+            "GET", "/me/mailFolders/drafts/messages", access_token, params=params
+        ) or {}
+        return {
+            "drafts": [self._map_deferred_draft(m, prop_id) for m in data.get("value", [])],
+            "next": data.get("@odata.nextLink"),
+        }
+
+    @classmethod
+    def _map_deferred_draft(cls, m: dict, prop_id: str) -> dict:
+        """Mapeia um rascunho diferido: id, subject, destinatários (emails) e o valor da prop."""
+        deferred_at = None
+        for ep in m.get("singleValueExtendedProperties") or []:
+            if ep.get("id") == prop_id:
+                deferred_at = ep.get("value")
+        return {
+            "id": m.get("id"),
+            "subject": m.get("subject"),
+            "to": [cls._addr(r) for r in m.get("toRecipients", [])],
+            "deferred_send_at": deferred_at,     # UTC ISO 8601 (cru, como veio do Exchange)
         }
 
     # --- email: escrita ---

@@ -21,6 +21,7 @@ import base64
 import logging
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError  # só para apresentação (P3/§5)
 
 from ..approval.engine import ApprovalEngine
 from ..approval.errors import ConfirmationExpired, ConfirmationNotFound
@@ -33,6 +34,7 @@ from ..identity.mapping import IdentityMapping
 from ..observability.audit import log_audit
 from ..storage.token_store import TokenStore
 from ._session import call_graph, reauth_response, resolve_access_token
+from ._timezone import _resolve_tz  # extraído de calendar.py (P6/§5.3)
 from .learning import record_action_event
 
 logger = logging.getLogger("mcp_o365.tools.email")
@@ -40,6 +42,14 @@ audit_logger = logging.getLogger("mcp_o365.audit")
 
 # Limite de anexo inline (Graph): acima disto é preciso upload session.
 _INLINE_ATTACHMENT_LIMIT = 3 * 1024 * 1024  # 3 MB
+
+# Extended property MAPI PidTagDeferredSendTime (envio diferido nativo do Exchange).
+# id = "{graph_type} {proptag}"; PT_SYSTIME -> SystemTime; tag 0x3FEF. Valor SEMPRE UTC ISO 8601.
+_DEFERRED_SEND_PROP_ID = "SystemTime 0x3FEF"
+
+# Validação temporal do agendamento (P1/P2).
+_MIN_SCHEDULE_MARGIN = timedelta(minutes=2)    # >= 2 min no futuro
+_MAX_SCHEDULE_HORIZON = timedelta(days=365)    # <= 1 ano
 
 # Nomes de pastas bem-conhecidas (case-insensitive) -> id especial do Graph.
 _WELL_KNOWN_FOLDERS = {
@@ -158,6 +168,43 @@ def _attachment_too_large(attachments: list[dict] | None) -> bool:
         if att.get("size") and int(att["size"]) > _INLINE_ATTACHMENT_LIMIT:
             return True
     return False
+
+
+# --- Agendamento (US-1.9/1.10/1.11): validação de offset e apresentação de hora ---
+
+
+def _has_offset(value: str) -> bool:
+    """True se a string ISO traz fuso explícito (Z ou ±HH:MM). P3: send_at TEM de o trazer."""
+    v = value.strip()
+    return v.endswith("Z") or v.endswith("z") or ("T" in v and ("+" in v[10:] or "-" in v[10:]))
+
+
+def _to_utc_iso(dt: datetime) -> str:
+    """datetime aware -> 'YYYY-MM-DDTHH:MM:SSZ' em UTC (formato aceite pela propriedade)."""
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _present_in_tz(dt: datetime, tz_label: str | None) -> str:
+    """Apresentação humana da hora no fuso (best-effort). NUNCA interpreta — só formata.
+
+    Aceita IANA ('Europe/Lisbon') via zoneinfo; se for nome Windows ('GMT Standard Time')
+    ou inválido, cai para UTC e anota. P3/§5: não é caminho crítico (o instante absoluto
+    correto já está garantido pelo send_at com offset)."""
+    if tz_label:
+        try:
+            local = dt.astimezone(ZoneInfo(tz_label))
+            return f"{local.strftime('%d/%m/%Y %H:%M')} ({tz_label})"
+        except (ZoneInfoNotFoundError, ValueError, KeyError):
+            pass  # nome Windows ou inválido -> UTC
+    return f"{dt.astimezone(timezone.utc).strftime('%d/%m/%Y %H:%M')} (UTC)"
+
+
+def _extract_deferred_value(msg: dict) -> str | None:
+    """Lê o value da extended property PidTagDeferredSendTime de um get_message expandido."""
+    for ep in msg.get("singleValueExtendedProperties") or []:
+        if ep.get("id") == _DEFERRED_SEND_PROP_ID:
+            return ep.get("value")
+    return None
 
 
 # ============================ LEITURA (sem aprovação) ============================
@@ -900,6 +947,340 @@ async def run_email_delete_confirm(
             "permanent": is_permanent,
         }
         if not is_permanent and isinstance(moved, dict) and moved.get("id"):
+            result["new_id"] = moved["id"]
+        return result
+
+    return await _confirm(approval, subject=subject, token=confirmation_token,
+                          executor=executor)
+
+
+# ==================== AGENDAMENTO DE ENVIO (US-1.9/1.10/1.11) ====================
+
+
+async def run_email_schedule_prepare(
+    subject: str | None,
+    *,
+    mapping: IdentityMapping,
+    plane_b: PlaneB,
+    graph_client: GraphClient,
+    store: TokenStore,
+    approval: ApprovalEngine,
+    to: list[str],
+    body: str,
+    send_at: str,
+    subject_line: str = "",
+    cc: list[str] | None = None,
+    bcc: list[str] | None = None,
+    body_type: str = "Text",
+    attachments: list[dict] | None = None,
+    timezone: str | None = None,
+    message_meta: dict | None = None,
+    account_id: str | None = None,
+    clock: Callable[[], datetime] = _utcnow,
+) -> dict:
+    """US-1.9 — Prepara o agendamento: valida destinatários e a HORA, monta a mensagem com a
+    extended property de envio diferido, devolve token. NÃO escreve no Graph."""
+    try:
+        account, _ = await resolve_access_token(
+            subject, mapping=mapping, plane_b=plane_b, store=store,
+            account_id=account_id, clock=clock,
+        )
+    except ReauthRequired as exc:
+        return reauth_response(str(exc))
+
+    if not to:
+        return {"status": "error", "message": "É obrigatório indicar destinatários (to)."}
+
+    # --- Validação temporal (P1/P2) — ANTES de qualquer escrita, sem token. ---
+    when = _parse_iso(send_at)                       # reutiliza o helper existente (aceita 'Z')
+    if when is None:
+        return {"status": "error", "message":
+                "send_at inválido: indique um instante ISO 8601 com fuso/offset (ex.: "
+                "2026-06-10T09:00:00+01:00 ou ...Z)."}
+    # P3: exigir instante ABSOLUTO. _parse_iso completa naive->UTC, por isso validamos
+    # explicitamente a presença de offset no texto.
+    if not _has_offset(send_at):
+        return {"status": "error", "message":
+                "send_at tem de incluir o fuso/offset resolvido (ex.: +01:00 ou Z). "
+                "Resolva a hora no fuso do mailbox a montante."}
+    now = clock()
+    delta = when - now
+    if delta < _MIN_SCHEDULE_MARGIN:
+        return {"status": "error", "message":
+                "A hora de envio tem de estar pelo menos 2 minutos no futuro."}
+    if delta > _MAX_SCHEDULE_HORIZON:
+        return {"status": "error", "message":
+                "A hora de envio não pode estar a mais de 1 ano de distância."}
+
+    send_at_utc = _to_utc_iso(when)                  # normaliza para "...Z"
+
+    # --- Fuso só para APRESENTAÇÃO (best-effort; P3/§5). Nunca interpreta a hora. ---
+    tz_label = timezone or await _resolve_tz(
+        subject, mapping=mapping, plane_b=plane_b, store=store,
+        graph_client=graph_client, account_id=account_id, clock=clock,
+    )  # pode ser None (fuso indisponível) -> apresentar em UTC e declará-lo.
+    when_label = _present_in_tz(when, tz_label)
+
+    # --- Montagem da message + extended property (mesmo _build_message do send). ---
+    message = _build_message(
+        to=to, cc=cc, bcc=bcc, subject=subject_line, body=body,
+        body_type=body_type, attachments=attachments,
+    )
+    message["singleValueExtendedProperties"] = [
+        {"id": _DEFERRED_SEND_PROP_ID, "value": send_at_utc}
+    ]
+
+    total = len(to) + len(cc or []) + len(bcc or [])
+    large = _attachment_too_large(attachments)
+    summary = (
+        f"Agendar email para {total} destinatário(s) "
+        f"(domínios: {', '.join(_domains(to)) or 'n/d'}), "
+        f"assunto '{subject_line or '(sem assunto)'}', envio em {when_label}."
+    )
+    if large:
+        summary += " Inclui anexo(s) grande(s) (envio via upload session)."
+    if tz_label is None and timezone is None:
+        summary += " (Fuso do mailbox indisponível; hora interpretada/apresentada em UTC.)"
+
+    prepared = approval.prepare(
+        subject=subject,
+        account_id=account.account_id,
+        operation="email.schedule",
+        payload={
+            "message": message,                      # já inclui singleValueExtendedProperties
+            "recipients_count": total,
+            "large_attachments": large,
+            "send_at_utc": send_at_utc,              # para auditoria (só-metadados)
+            "message_meta": _safe_meta(message_meta),
+        },
+        summary=summary,
+    )
+    prepared["recipients_count"] = total
+    prepared["large_attachments"] = large
+    prepared["send_at_utc"] = send_at_utc
+    return prepared
+
+
+async def run_email_schedule_confirm(
+    subject: str | None,
+    *,
+    mapping: IdentityMapping,
+    plane_b: PlaneB,
+    graph_client: GraphClient,
+    store: TokenStore,
+    approval: ApprovalEngine,
+    confirmation_token: str,
+    account_id: str | None = None,
+    clock: Callable[[], datetime] = _utcnow,
+) -> dict:
+    """US-1.9 — Confirma o agendamento com token fresco; audita `email.schedule`."""
+    async def executor(operation: str, payload: dict) -> dict:
+        message = payload["message"]                 # inclui singleValueExtendedProperties
+
+        async def do(token: str) -> str | None:
+            # Diferido OBRIGA draft->send (a extended property é definida na CRIAÇÃO do
+            # rascunho; `sendMail` ignora-a). Mesmo sem anexos grandes, usa-se draft->send.
+            inline = [a for a in message.get("attachments", []) if not _att_is_large(a)]
+            draft = await graph_client.create_draft(token, {**message, "attachments": inline})
+            draft_id = draft.get("id")
+            if payload.get("large_attachments"):
+                for att in message.get("attachments", []):
+                    if not _att_is_large(att):
+                        continue
+                    raw = base64.b64decode(att.get("contentBytes") or "")
+                    session = await graph_client.create_attachment_upload_session(
+                        token, draft_id,
+                        attachment_item={
+                            "attachmentType": "file",
+                            "name": att.get("name"),
+                            "size": len(raw),
+                        },
+                    )
+                    upload_url = session.get("uploadUrl") if session else None
+                    if upload_url:
+                        await graph_client.upload_attachment_bytes(upload_url, raw)
+            await graph_client.send_draft(token, draft_id)
+            return draft_id
+
+        account, draft_id = await call_graph(
+            subject, mapping=mapping, plane_b=plane_b, store=store,
+            op=do, account_id=account_id, clock=clock,
+        )
+        log_audit(
+            audit_logger, action="email.schedule", subject=subject,
+            account_id=account.account_id, target=draft_id,
+            outcome="success", recipients_count=payload.get("recipients_count"),
+            extra={"large_attachments": bool(payload.get("large_attachments")),
+                   "send_at_utc": payload.get("send_at_utc"), "deferred": True},
+        )
+        record_action_event(
+            subject, store=store, action="schedule",      # P5
+            message=payload.get("message_meta"), clock=clock,
+        )
+        return {"operation": operation, "message_id": draft_id,
+                "send_at_utc": payload.get("send_at_utc"),
+                "message": "Envio agendado."}
+
+    return await _confirm(approval, subject=subject, token=confirmation_token,
+                          executor=executor)
+
+
+async def run_email_list_scheduled(
+    subject: str | None,
+    *,
+    mapping: IdentityMapping,
+    plane_b: PlaneB,
+    graph_client: GraphClient,
+    store: TokenStore,
+    top: int = 50,
+    timezone: str | None = None,
+    account_id: str | None = None,
+    clock: Callable[[], datetime] = _utcnow,
+) -> dict:
+    """US-1.10 — Lista os rascunhos com a extended property de envio diferido cujo instante
+    ainda é FUTURO (pendentes). Leitura; não escreve; não exige aprovação."""
+    tz_label = timezone or await _resolve_tz(
+        subject, mapping=mapping, plane_b=plane_b, store=store,
+        graph_client=graph_client, account_id=account_id, clock=clock,
+    )
+    try:
+        _, page = await call_graph(
+            subject, mapping=mapping, plane_b=plane_b, store=store,
+            op=lambda token: graph_client.list_deferred_drafts(
+                token, prop_id=_DEFERRED_SEND_PROP_ID, top=top,
+            ),
+            account_id=account_id, clock=clock,
+        )
+    except ReauthRequired as exc:
+        return reauth_response(str(exc))
+
+    now = clock()
+    items = []
+    for d in page["drafts"]:
+        send_at_utc = d.get("deferred_send_at")          # valor da prop expandida (UTC ISO)
+        when = _parse_iso(send_at_utc)
+        if when is None or when <= now:                  # FILTRO "ainda futuro" CLIENT-SIDE
+            continue
+        recips = d.get("to") or []
+        items.append({
+            "id": d.get("id"),
+            "subject": sanitize_html(d.get("subject") or ""),  # conteúdo não-confiável
+            "recipients_count": len(recips),
+            "recipient_domains": _domains(recips),
+            "send_at": _present_in_tz(when, tz_label),   # apresentação no fuso
+            "send_at_utc": send_at_utc,
+        })
+    items.sort(key=lambda i: i["send_at_utc"])            # mais próximos primeiro
+    return {
+        "status": "ok",
+        "scheduled": items,
+        "count": len(items),
+        "has_more": page["next"] is not None,
+        "content_is_untrusted": True,
+    }
+
+
+async def run_email_schedule_cancel_prepare(
+    subject: str | None,
+    *,
+    mapping: IdentityMapping,
+    plane_b: PlaneB,
+    graph_client: GraphClient,
+    store: TokenStore,
+    approval: ApprovalEngine,
+    message_id: str,
+    timezone: str | None = None,
+    message_meta: dict | None = None,
+    account_id: str | None = None,
+    clock: Callable[[], datetime] = _utcnow,
+) -> dict:
+    """US-1.11 — Prepara o cancelamento de um envio agendado (NÃO elimina). Confirma
+    best-effort que o `message_id` é um rascunho ainda diferido e monta o resumo."""
+    try:
+        account, _ = await resolve_access_token(
+            subject, mapping=mapping, plane_b=plane_b, store=store,
+            account_id=account_id, clock=clock,
+        )
+    except ReauthRequired as exc:
+        return reauth_response(str(exc))
+
+    # Best-effort (P7): ler o rascunho com a extended property para validar/apresentar.
+    deferred_at = None
+    subj = None
+    try:
+        _, msg = await call_graph(
+            subject, mapping=mapping, plane_b=plane_b, store=store,
+            op=lambda token: graph_client.get_message(
+                token, message_id,
+                expand=(
+                    "singleValueExtendedProperties("
+                    f"$filter=id eq '{_DEFERRED_SEND_PROP_ID}')"
+                ),
+            ),
+            account_id=account_id, clock=clock,
+        )
+        deferred_at = _extract_deferred_value(msg)       # None se a prop não estiver presente
+        subj = msg.get("subject")
+    except ReauthRequired as exc:
+        return reauth_response(str(exc))
+    # (Outras falhas de leitura: degradar — não bloquear o cancelamento; resumo genérico.)
+
+    # Se lemos e o rascunho JÁ NÃO é diferido (sem a prop / já enviado) -> erro, sem token.
+    if subj is not None and deferred_at is None:
+        return {"status": "error", "message":
+                "Este email já não é um envio agendado pendente (pode já ter sido enviado "
+                "ou cancelado). Liste os agendados com email_list_scheduled."}
+
+    tz_label = timezone or await _resolve_tz(
+        subject, mapping=mapping, plane_b=plane_b, store=store,
+        graph_client=graph_client, account_id=account_id, clock=clock,
+    )
+    when = _parse_iso(deferred_at)
+    when_label = _present_in_tz(when, tz_label) if when else "hora desconhecida"
+    summary = (
+        f"Cancelar o envio agendado para {when_label}, "
+        f"assunto '{sanitize_html(subj or '(desconhecido)')}'. "
+        "O rascunho vai para Itens Eliminados (recuperável)."
+    )
+
+    return approval.prepare(
+        subject=subject,
+        account_id=account.account_id,
+        operation="email.schedule_cancel",
+        payload={"message_id": message_id, "message_meta": _safe_meta(message_meta)},
+        summary=summary,
+    )
+
+
+async def run_email_schedule_cancel_confirm(
+    subject: str | None,
+    *,
+    mapping: IdentityMapping,
+    plane_b: PlaneB,
+    graph_client: GraphClient,
+    store: TokenStore,
+    approval: ApprovalEngine,
+    confirmation_token: str,
+    account_id: str | None = None,
+    clock: Callable[[], datetime] = _utcnow,
+) -> dict:
+    """US-1.11 — Confirma o cancelamento; soft delete do rascunho; audita
+    `email.schedule_cancel`."""
+    async def executor(operation: str, payload: dict) -> dict:
+        account, moved = await call_graph(
+            subject, mapping=mapping, plane_b=plane_b, store=store,
+            op=lambda token: graph_client.move_message(
+                token, payload["message_id"], destination_id="deleteditems"),
+            account_id=account_id, clock=clock,
+        )
+        log_audit(
+            audit_logger, action="email.schedule_cancel", subject=subject,
+            account_id=account.account_id, target=payload["message_id"],
+            outcome="success", extra={"permanent": False},
+        )
+        result = {"operation": operation, "message": "Envio agendado cancelado "
+                  "(rascunho movido para Itens Eliminados)."}
+        if isinstance(moved, dict) and moved.get("id"):
             result["new_id"] = moved["id"]
         return result
 

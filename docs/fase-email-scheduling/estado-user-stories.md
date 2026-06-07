@@ -3,7 +3,8 @@
 > **Extensão do Módulo Email** (Fase 1, US-1.1 a US-1.8) com agendamento de envio. Análise
 > funcional em [analise-funcional-agendamento.md](analise-funcional-agendamento.md). Reutiliza
 > os scopes **já concedidos** (`Mail.Read`/`Mail.Send`/`Mail.ReadWrite` da Fase 1 +
-> `MailboxSettings.Read` da Fase 2) — **sem novo admin consent**. Dev/QA ainda **não começaram**.
+> `MailboxSettings.Read` da Fase 2) — **sem novo admin consent**. **Implementação Dev concluída**
+> (US-1.9/1.10/1.11); testes automáticos (T1–T24) a cargo do QA.
 
 ## Legenda
 
@@ -18,9 +19,9 @@
 
 | US | Descrição | Implementado | Testado (auto) | Validação manual | Notas |
 |----|-----------|:---:|:---:|:---:|-------|
-| US-1.9 | Agendar envio de email para data/hora (`email_schedule_prepare`/`_confirm`) | ⬜ | ⬜ | ⬜ | Two-phase. Caminho **draft→send** com `singleValueExtendedProperties` `"SystemTime 0x3FEF"` (UTC ISO 8601 = `PidTagDeferredSendTime`). Hora no **fuso do mailbox** (decisão 1), convertida para UTC ao gravar. Validação: futuro + margem mínima + limite superior (recusa sem token no passado). Coexiste com anexos grandes (reutiliza o caminho da US-1.6). Auditoria `email.schedule` (só-metadados: `recipients_count`, `send_at_utc`, `large_attachments`). |
-| US-1.10 | Listar envios agendados pendentes (`email_list_scheduled`) | ⬜ | ⬜ | ⬜ | Leitura, sem aprovação. **Fonte de verdade = o mailbox** (sem registo local): `GET /me/mailFolders/drafts/messages` com `$filter`/`$expand` sobre a extended property; "ainda futuro" filtrado client-side se necessário. Devolve `id`, assunto, contagem/domínios, `send_at` no fuso do mailbox + `send_at_utc`. Assunto/preview sanitizados + `content_is_untrusted`. |
-| US-1.11 | Cancelar um envio agendado pendente (`email_schedule_cancel_prepare`/`_confirm`) | ⬜ | ⬜ | ⬜ | Two-phase. Cancela **eliminando o rascunho** por id (soft delete por defeito, recuperável — como US-1.8; permanente é opção reforçada). Auditoria `email.schedule_cancel` (`target=message_id`). **Cancelabilidade real é um gate** (ver Notas de validação abaixo). |
+| US-1.9 | Agendar envio de email para data/hora (`email_schedule_prepare`/`_confirm`) | ☑ | ⬜ | ⬜ | Two-phase. Caminho **draft→send** com `singleValueExtendedProperties` `"SystemTime 0x3FEF"` (UTC ISO 8601 = `PidTagDeferredSendTime`). Hora no **fuso do mailbox** (decisão 1), convertida para UTC ao gravar. Validação: futuro + margem mínima + limite superior (recusa sem token no passado). Coexiste com anexos grandes (reutiliza o caminho da US-1.6). Auditoria `email.schedule` (só-metadados: `recipients_count`, `send_at_utc`, `large_attachments`). |
+| US-1.10 | Listar envios agendados pendentes (`email_list_scheduled`) | ☑ | ⬜ | ⬜ | Leitura, sem aprovação. **Fonte de verdade = o mailbox** (sem registo local): `GET /me/mailFolders/drafts/messages` com `$filter`/`$expand` sobre a extended property; "ainda futuro" filtrado client-side se necessário. Devolve `id`, assunto, contagem/domínios, `send_at` no fuso do mailbox + `send_at_utc`. Assunto/preview sanitizados + `content_is_untrusted`. |
+| US-1.11 | Cancelar um envio agendado pendente (`email_schedule_cancel_prepare`/`_confirm`) | ☑ | ⬜ | ⬜ | Two-phase. Cancela **eliminando o rascunho** por id — **só soft delete** (P4: move para `deleteditems`, recuperável; **sem** reforço/`permanent`). Auditoria `email.schedule_cancel` (`target=message_id`, `extra={permanent:false}`). **Cancelabilidade real é um gate** (ver Notas de validação abaixo). |
 
 ## Notas de validação manual (gates no tenant real)
 

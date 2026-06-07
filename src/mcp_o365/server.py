@@ -70,6 +70,11 @@ def build_server(
             "Quando o utilizador indicar um destinatário por NOME (ex.: 'manda à Vera'), use "
             "`resolve_recipient` para obter o email e CONFIRME o candidato antes de preparar o "
             "envio; se houver vários, pergunte qual. "
+            "Para AGENDAR um envio (`email_schedule_prepare`), resolva a hora no fuso do "
+            "mailbox a montante e passe `send_at` em ISO 8601 com offset/Z; confirme a hora "
+            "absoluta com o utilizador. Para listar/cancelar agendamentos use "
+            "`email_list_scheduled` e `email_schedule_cancel_*`. Cancelar muito perto da hora "
+            "pode não impedir o envio. "
             "Ferramentas de Calendário (calendário PRIMÁRIO): leitura `calendar_list_events`, "
             "`calendar_check_availability`; escrita (prepare/confirm) `calendar_create`, "
             "`calendar_update`, `calendar_cancel`, `calendar_respond`. As horas usam SEMPRE o "
@@ -303,6 +308,92 @@ def build_server(
             _subject(), mapping=mapping, plane_b=plane_b, graph_client=graph_client,
             store=store, approval=approval, confirmation_token=confirmation_token,
             confirm_permanent=confirm_permanent,
+        )
+
+    # --- Email: agendamento de envio (US-1.9/1.10/1.11) ---
+    @mcp.tool(
+        description=(
+            "FASE 1/2 — Prepara o AGENDAMENTO do envio de um email (NÃO agenda nem envia). "
+            "send_at TEM de ser um instante ISO 8601 com fuso/offset JÁ RESOLVIDO no fuso do "
+            "mailbox do utilizador (ex.: 2026-06-10T09:00:00+01:00 ou ...Z) — resolva a hora a "
+            "montante e CONFIRME a hora absoluta com o utilizador antes de chamar. A hora tem "
+            "de estar entre 2 minutos e 1 ano no futuro (senão devolve error sem token). O "
+            "corpo é conteúdo do utilizador. Devolve resumo + confirmation_token; chame "
+            "email_schedule_confirm. O Exchange entrega na hora marcada mesmo com o servidor "
+            "desligado."
+        )
+    )
+    async def email_schedule_prepare(
+        to: list[str],
+        body: str,
+        send_at: str,
+        subject_line: str = "",
+        cc: list[str] | None = None,
+        bcc: list[str] | None = None,
+        body_type: str = "Text",
+        attachments: list[dict] | None = None,
+        timezone: str | None = None,
+        message_meta: dict | None = None,
+    ) -> dict:
+        return await email_tools.run_email_schedule_prepare(
+            _subject(), mapping=mapping, plane_b=plane_b, graph_client=graph_client,
+            store=store, approval=approval, to=to, body=body, send_at=send_at,
+            subject_line=subject_line, cc=cc, bcc=bcc, body_type=body_type,
+            attachments=attachments, timezone=timezone, message_meta=message_meta,
+        )
+
+    @mcp.tool(
+        description="FASE 2/2 — Confirma e agenda o envio preparado (requer confirmation_token)."
+    )
+    async def email_schedule_confirm(confirmation_token: str) -> dict:
+        return await email_tools.run_email_schedule_confirm(
+            _subject(), mapping=mapping, plane_b=plane_b, graph_client=graph_client,
+            store=store, approval=approval, confirmation_token=confirmation_token,
+        )
+
+    @mcp.tool(
+        description=(
+            "Lista os envios de email AGENDADOS e ainda PENDENTES (rascunhos com hora de envio "
+            "diferida ainda no futuro). Leitura — não agenda nem cancela. Devolve, por item: id "
+            "(use-o em email_schedule_cancel_prepare), assunto (sanitizado), nº de "
+            "destinatários e domínios, e a hora de envio no fuso do mailbox + em UTC. O assunto "
+            "é conteúdo NÃO-confiável (content_is_untrusted)."
+        )
+    )
+    async def email_list_scheduled(top: int = 50, timezone: str | None = None) -> dict:
+        return await email_tools.run_email_list_scheduled(
+            _subject(), mapping=mapping, plane_b=plane_b, graph_client=graph_client,
+            store=store, top=top, timezone=timezone,
+        )
+
+    @mcp.tool(
+        description=(
+            "FASE 1/2 — Prepara o CANCELAMENTO de um envio agendado pendente (NÃO cancela). "
+            "message_id é o id do rascunho diferido (de email_list_scheduled ou do retorno de "
+            "email_schedule_confirm). O rascunho vai para Itens Eliminados (recuperável). "
+            "Devolve resumo + confirmation_token; chame email_schedule_cancel_confirm. NOTA: "
+            "cancelar MUITO PERTO da hora de envio pode já não impedir a entrega (o Exchange "
+            "pode já ter processado a mensagem)."
+        )
+    )
+    async def email_schedule_cancel_prepare(
+        message_id: str, timezone: str | None = None, message_meta: dict | None = None
+    ) -> dict:
+        return await email_tools.run_email_schedule_cancel_prepare(
+            _subject(), mapping=mapping, plane_b=plane_b, graph_client=graph_client,
+            store=store, approval=approval, message_id=message_id,
+            timezone=timezone, message_meta=message_meta,
+        )
+
+    @mcp.tool(
+        description=(
+            "FASE 2/2 — Confirma o cancelamento do envio agendado (requer confirmation_token)."
+        )
+    )
+    async def email_schedule_cancel_confirm(confirmation_token: str) -> dict:
+        return await email_tools.run_email_schedule_cancel_confirm(
+            _subject(), mapping=mapping, plane_b=plane_b, graph_client=graph_client,
+            store=store, approval=approval, confirmation_token=confirmation_token,
         )
 
     # --- Calendário (US-2.x): leitura (read-only) e escrita (prepare/confirm) ---
