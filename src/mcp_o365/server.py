@@ -189,14 +189,15 @@ def build_server(
     # --- Email: escrita (prepare/confirm) ---
     @mcp.tool(
         description=(
-            "FASE 1/2 — Prepara o envio de um email (NÃO envia). Valida e devolve resumo + "
-            "confirmation_token. Chame email_send_confirm para enviar."
+            "FASE 1/2 — Prepara o envio de um email (NÃO envia). Parâmetros: to, body, subject "
+            "(assunto), cc, bcc, attachments. Valida e devolve resumo + confirmation_token. "
+            "Chame email_send_confirm para enviar."
         )
     )
     async def email_send_prepare(
         to: list[str],
         body: str,
-        subject_line: str = "",
+        subject: str = "",
         cc: list[str] | None = None,
         bcc: list[str] | None = None,
         body_type: str = "Text",
@@ -205,7 +206,7 @@ def build_server(
     ) -> dict:
         return await email_tools.run_email_send_prepare(
             _subject(), mapping=mapping, plane_b=plane_b, store=store, approval=approval,
-            to=to, body=body, subject_line=subject_line, cc=cc, bcc=bcc,
+            to=to, body=body, subject_line=subject, cc=cc, bcc=bcc,
             body_type=body_type, attachments=attachments, message_meta=message_meta,
         )
 
@@ -354,8 +355,9 @@ def build_server(
 
     @mcp.tool(
         description=(
-            "FASE 1/2 — Prepara a criação de um evento (NÃO cria). Parâmetros: subject_line, "
-            "start, end (ISO 8601, no fuso do mailbox), attendees (EMAILS já resolvidos — use "
+            "FASE 1/2 — Prepara a criação de um evento (NÃO cria). Parâmetros: subject (título "
+            "do evento), start, end (ISO 8601, no fuso do mailbox), attendees (EMAILS já "
+            "resolvidos — use "
             "resolve_recipient e confirme antes), body, location (local físico opcional), "
             "online (default: link Teams SE não houver location). Valida, monta o evento e "
             "devolve resumo + confirmation_token. O resumo declara quantos participantes serão "
@@ -364,7 +366,7 @@ def build_server(
         )
     )
     async def calendar_create_prepare(
-        subject_line: str,
+        subject: str,
         start: str,
         end: str,
         attendees: list[str] | None = None,
@@ -375,7 +377,7 @@ def build_server(
     ) -> dict:
         return await calendar_tools.run_calendar_create_prepare(
             _subject(), mapping=mapping, plane_b=plane_b, graph_client=graph_client,
-            store=store, approval=approval, subject_line=subject_line, start=start,
+            store=store, approval=approval, subject_line=subject, start=start,
             end=end, attendees=attendees, body=body, body_type=body_type,
             location=location, online=online,
         )
@@ -395,7 +397,7 @@ def build_server(
     @mcp.tool(
         description=(
             "FASE 1/2 — Prepara editar/reagendar um evento (NÃO altera). Parâmetros: event_id "
-            "(de calendar_list_events) + os campos a mudar (start/end/subject_line/location/"
+            "(de calendar_list_events) + os campos a mudar (start/end/subject/location/"
             "body/attendees). Se o evento for RECORRENTE, devolve status='needs_clarification' "
             "(sem token): PERGUNTE se aplica só a ESTA ocorrência ou à SÉRIE inteira; repita "
             "com scope='occurrence' ou scope='series'. O resumo declara os participantes "
@@ -404,7 +406,7 @@ def build_server(
     )
     async def calendar_update_prepare(
         event_id: str,
-        subject_line: str | None = None,
+        subject: str | None = None,
         start: str | None = None,
         end: str | None = None,
         location: str | None = None,
@@ -415,7 +417,7 @@ def build_server(
     ) -> dict:
         return await calendar_tools.run_calendar_update_prepare(
             _subject(), mapping=mapping, plane_b=plane_b, graph_client=graph_client,
-            store=store, approval=approval, event_id=event_id, subject_line=subject_line,
+            store=store, approval=approval, event_id=event_id, subject_line=subject,
             start=start, end=end, location=location, body=body, body_type=body_type,
             attendees=attendees, scope=scope,
         )

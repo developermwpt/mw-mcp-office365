@@ -141,7 +141,7 @@ mail_reply_confirm(token=T1)              # só após aprovação
 
 **Parâmetros críticos**
 - `calendar_check_availability`: `start`/`end` (ISO 8601), `attendees` (EMAILS já resolvidos), `interval_minutes` (default 30). Inclui sempre o próprio. Devolve janelas ocupadas/livres — base para escolher o slot.
-- `calendar_create_*`: `subject_line`, **`start`/`end`** (regra do fuso), `attendees`, `body`, `location`, `online`. Devolve o **ID do evento** (`event_id`) ao confirmar.
+- `calendar_create_*`: `subject` (título), **`start`/`end`** (regra do fuso), `attendees`, `body`, `location`, `online`. Devolve o **ID do evento** (`event_id`) ao confirmar.
 - `calendar_update_*` / `calendar_cancel_*`: **`event_id`** (de `calendar_list_events`); `scope` quando recorrente.
 - `calendar_respond_*`: **`event_id`** + `response` in {accept, decline, tentative} + `comment` opcional.
 
