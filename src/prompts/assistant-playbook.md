@@ -101,6 +101,7 @@ Regras associadas:
 
 **Parâmetros críticos**
 - `mail_search`: query, intervalo de datas, `from`, `folder`, `isRead`, `hasAttachments`, paginação. Devolve **IDs de email** — guarda-os para os passos seguintes.
+- `mail_send_*`: **destinatários** (`to`, `cc`, `bcc`), **`subject`** (assunto), `body`, `attachments`. O assunto é o campo `subject` (não `subject_line`).
 - `mail_reply_*`: o **ID do email original**, escolha **reply vs reply-all**, corpo. Confirma se o utilizador quer responder a todos.
 - `mail_forward_*`: ID do email, **destinatários**, se inclui anexos, nota de encaminhamento.
 - `mail_move_*`: ID do email + **ID/nome da pasta destino** (resolve via `mail_list_folders` se necessário).

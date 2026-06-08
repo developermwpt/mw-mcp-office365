@@ -11,6 +11,8 @@ src/    → código técnico do servidor MCP (a desenvolver)
           └── prompts/ → assets de runtime carregados pelo servidor
 ```
 
+Histórico de alterações em [`CHANGELOG.md`](CHANGELOG.md).
+
 ## Documentos funcionais — [`docs/`](docs)
 
 - [`docs/analise-funcional-v1.1.md`](docs/analise-funcional-v1.1.md) — **Análise funcional a
